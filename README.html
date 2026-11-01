@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Checksum Manifest Utility — C</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    background: #fff;
+    color: #24292e;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  body {
+    padding: max(0.75em, 1.25vw) max(1em, 1.6667vw) max(1em, 1.6667vw);
+    line-height: 1.52;
+    font-size: 16px;
+  }
+
+  /* GitHub-flavored markdown styling */
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+    line-height: 1.25;
+    margin-top: 24px;
+    margin-bottom: 16px;
+    scroll-margin-top: 20px;
+  }
+  h1 {
+    font-size: 2.2em;
+    padding: 0 0 0.3em;
+    border-bottom: 1px solid #eaecef;
+  }
+  h2 {
+    font-size: 1.6em;
+    padding: 0 0 0.3em;
+    border-bottom: 1px solid #eaecef;
+  }
+  h3 { font-size: 1.3em; padding: 0; }
+  h4 { font-size: 1.1em; padding: 0; }
+  h5 { font-size: 1em; padding: 0; }
+  h6 { font-size: 0.9em; padding: 0; color: #6a737d; }
+  p { margin-top: 0; margin-bottom: 16px; padding: 0; }
+  a { color: #0366d6; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr {
+    height: 1px;
+    background: #e1e4e8;
+    border: none;
+    margin: 24px 0;
+  }
+  ul, ol {
+    padding-left: 2em;
+    padding-right: 0;
+    margin-top: 0;
+    margin-bottom: 16px;
+  }
+  li { line-height: 1.48; }
+  li + li { margin-top: 0.20em; }
+  li > p, li > h1, li > h2, li > h3, li > h4, li > h5, li > h6 {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  li > ul, li > ol {
+    padding-left: 2em;
+    padding-right: 0;
+    margin-top: 0.25em;
+    margin-bottom: 0;
+  }
+  li > p + ul, li > p + ol {
+    margin-top: -0.25em;
+  }
+  li > p + ul.loose-list, li > p + ol.loose-list {
+    margin-top: 0;
+  }
+  li.nested-list-before-sibling {
+    padding-bottom: 0;
+  }
+  li.nested-list-before-sibling > p + ul:last-child,
+  li.nested-list-before-sibling > p + ol:last-child {
+    margin-bottom: 0.75em;
+  }
+  li > ul + p, li > ol + p, li > pre + p, li > blockquote + p,
+  li > table + p, li > dl + p, li > details + p {
+    margin-top: 0.75em;
+  }
+  li > pre { margin-top: 0.55em; }
+  li > p + pre { margin-top: 0; }
+  code {
+    background: rgba(27,31,35,0.05);
+    color: #24292e;
+    padding: 0.22em 0.48em;
+    border-radius: 6px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 88%;
+    line-height: 1.72;
+    word-break: break-word;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  pre {
+    background: #f6f8fa;
+    color: #24292e;
+    padding: 11px 0.9em;
+    overflow-x: auto;
+    margin-top: 0;
+    margin-right: 0;
+    margin-bottom: 16px;
+    margin-left: 0;
+    border-radius: 8px;
+  }
+  pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: 90%;
+    line-height: 1.30;
+    white-space: pre;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0 0 16px 0;
+    display: block;
+    overflow-x: auto;
+  }
+  table th, table td {
+    border: 1px solid #dfe2e5;
+    padding: 8px 14px;
+  }
+  table th {
+    background: #f6f8fa;
+    font-weight: 600;
+  }
+  table tr:nth-child(2n) { background: #f6f8fa; }
+  .align-left { text-align: left; }
+  .align-center { text-align: center; }
+  .align-right { text-align: right; }
+  blockquote {
+    margin: 0 0 16px;
+    padding: 0 1em;
+    color: #6a737d;
+    border-left: 0.25em solid #dfe2e5;
+  }
+  .markdown-alert {
+    margin: 0 0 16px;
+    padding: 11px 1em 14px;
+    border-left: 0.25em solid #dfe2e5;
+  }
+  .markdown-alert > p { padding-left: 0; padding-right: 0; }
+  .markdown-alert > :first-child { margin-top: 0; }
+  .markdown-alert > :last-child { margin-bottom: 0; }
+  .markdown-alert-title { font-weight: 600; margin-bottom: 0.45em; }
+  .markdown-alert-note {
+    color: #505963;
+    background: #fafbfc;
+    border-left-color: #818b98;
+  }
+  .markdown-alert-tip { border-left-color: #1a7f37; }
+  .markdown-alert-important { border-left-color: #8250df; }
+  .markdown-alert-warning { border-left-color: #9a6700; }
+  .markdown-alert-caution { border-left-color: #cf222e; }
+  blockquote > :first-child { margin-top: 0; }
+  blockquote > :last-child { margin-bottom: 0; }
+  blockquote p, blockquote h1, blockquote h2, blockquote h3,
+  blockquote h4, blockquote h5, blockquote h6 { padding-left: 0; padding-right: 0; }
+  blockquote ul, blockquote ol { padding-right: 0; padding-left: 2em; }
+  img { max-width: 100%; height: auto; }
+  .image-unavailable {
+    display: inline-block;
+    padding: 0.2em 0.5em;
+    border: 1px solid #dfe2e5;
+    border-radius: 6px;
+    color: #6a737d;
+  }
+  del { text-decoration: line-through; }
+  ins { text-decoration-style: solid; }
+  mark { background: #fff3a3; color: inherit; }
+  abbr[title] {
+    text-decoration-line: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.12em;
+    cursor: help;
+  }
+  kbd {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    background: #fafbfc;
+    border: 1px solid #c6cbd1;
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+  }
+  dl { margin: 0 0 16px; }
+  dt { font-weight: 600; margin-top: 0.75em; }
+  dl > dt:first-child { margin-top: 0; }
+  dd { margin-left: 2em; }
+  dt + dd, dd + dd { margin-top: 0.20em; }
+  dd > p { margin-bottom: 0.55em; }
+  dd > p:last-child { margin-bottom: 0; }
+  .task-list { list-style: none; }
+  .task-list-item { margin-left: -1.4em; }
+  .task-list-item input {
+    width: 1em;
+    height: 1em;
+    margin: 0 0.35em 0 0;
+    vertical-align: -0.1em;
+  }
+  .footnotes { font-size: 0.9em; }
+  .footnotes ol { padding-right: 0; }
+  .footnotes li p { padding-left: 0; padding-right: 0; }
+  .footnote-ref { line-height: 1; }
+  .footnote-backref { margin-left: 0.25em; }
+  .text-left { text-align: left; }
+  .text-center { text-align: center; }
+  .text-right { text-align: right; }
+  .document-title { margin-bottom: 0.15em; }
+  .document-subtitle {
+    margin-top: 0;
+    color: #24292e;
+    font-weight: 400;
+  }
+  .html-block { margin-top: 0; margin-bottom: 16px; }
+  p.html-block { padding-left: 0; padding-right: 0; }
+  div.html-block { margin-left: 0; margin-right: 0; }
+  .media-panel {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+    background: #f6f8fa;
+    border: 1px solid #dfe2e5;
+    border-radius: 8px;
+  }
+  .media-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+  }
+  .media-row > br, .media-panel > br { display: none; }
+  .image-link, .media-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+  }
+  .image-link:hover, .media-link:hover { text-decoration: none; }
+  .image-link-card {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45em;
+    max-width: 100%;
+    padding: 0.45em 0.7em;
+    color: #0366d6;
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    line-height: 1.25;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  a:hover > .image-link-card { background: #f3f6f9; }
+  .badge-placeholder { font-size: 0.78em; min-height: 2.1em; }
+  .image-placeholder {
+    min-height: 4.5em;
+    min-width: min(100%, 16em);
+    font-size: 0.9em;
+  }
+  .image-link-icon { flex: 0 0 auto; opacity: 0.65; }
+  .image-link-label { min-width: 0; }
+  .markdown-image {
+    display: inline-block;
+    max-width: 100%;
+    max-height: 520px;
+    object-fit: contain;
+    vertical-align: middle;
+  }
+  .media-row-single .markdown-image, .media-row-single .image-placeholder {
+    max-width: 420px;
+  }
+  .badge-row .markdown-image, .media-panel .markdown-image { max-height: 38px; }
+  .media-table th, .media-table td {
+    min-width: 220px;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .media-table td .markdown-image { width: 100%; height: auto; }
+  .media-table .image-link-card { width: 100%; min-height: 5em; }
+  details {
+    margin: 0 0 16px 0;
+    padding: 0.65em 0.85em;
+    border: 1px solid #dfe2e5;
+    border-radius: 6px;
+  }
+  summary { cursor: pointer; font-weight: 600; }
+  details > summary + * { margin-top: 0.45em; }
+  details > :last-child { margin-bottom: 0; }
+  @media (max-width: 640px) {
+    .media-panel { padding: 12px; }
+    .image-placeholder { min-width: 100%; }
+    .media-table th, .media-table td { min-width: 180px; }
+  }
+  body > *:first-child { margin-top: 0; }
+  body > *:last-child { margin-bottom: 0; }
+
+</style>
+</head>
+<body>
+<h1 id="checksum-manifest-utility-c">Checksum Manifest Utility — C</h1>
+<p><code>checksum-manifest</code> is a standalone C99 command-line utility for hashing files directly and for generating, verifying, deriving, reformatting, joining, splitting, and removing checksum manifests.</p>
+<p>All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRHash. The program does not invoke external checksum executables.</p>
+<h2 id="contents">Contents</h2>
+<ul>
+<li><a href="#requirements">Requirements</a>
+</li>
+<li class="nested-list-before-sibling"><a href="#building">Building</a>
+<ul>
+<li><a href="#direct-compiler-build">Direct compiler build</a>
+</li>
+<li><a href="#cmake">CMake</a>
+</li>
+<li><a href="#meson">Meson</a>
+</li>
+</ul>
+</li>
+<li><a href="#usage">Usage</a>
+</li>
+<li class="nested-list-before-sibling"><a href="#modes">Modes</a>
+<ul>
+<li><a href="#check">check</a>
+</li>
+<li><a href="#hash">hash</a>
+</li>
+<li><a href="#generate">generate</a>
+</li>
+<li><a href="#derive">derive</a>
+</li>
+<li><a href="#format">format</a>
+</li>
+<li><a href="#join">join</a>
+</li>
+<li><a href="#split">split</a>
+</li>
+<li><a href="#remove">remove</a>
+</li>
+</ul>
+</li>
+<li><a href="#algorithms-and-selectors">Algorithms and selectors</a>
+</li>
+<li><a href="#manifest-discovery">Manifest discovery</a>
+</li>
+<li><a href="#hash-and-generate-file-selection">Hash and generate file selection</a>
+</li>
+<li><a href="#entry-grammar">Entry grammar</a>
+</li>
+<li><a href="#delimiter-option">Delimiter option</a>
+</li>
+<li><a href="#verification-results">Verification results</a>
+</li>
+<li><a href="#native-hash-providers">Native hash providers</a>
+</li>
+<li class="nested-list-before-sibling"><a href="#output-behavior">Output behavior</a>
+<ul>
+<li><a href="#check-output">check output</a>
+</li>
+<li><a href="#hash-output">hash output</a>
+</li>
+<li><a href="#generate-output">generate output</a>
+</li>
+<li><a href="#derive-output">derive output</a>
+</li>
+<li><a href="#format-behavior">format behavior</a>
+</li>
+<li><a href="#join-output">join output</a>
+</li>
+<li><a href="#split-output">split output</a>
+</li>
+<li><a href="#remove-behavior">remove behavior</a>
+</li>
+<li><a href="#collision-handling">Collision handling</a>
+</li>
+</ul>
+</li>
+<li><a href="#newline-modes">Newline modes</a>
+</li>
+<li><a href="#path-separators">Path separators</a>
+</li>
+<li><a href="#absolute-paths">Absolute paths</a>
+</li>
+<li><a href="#filename-encoding">Filename encoding</a>
+</li>
+<li><a href="#memory-safety">Memory safety</a>
+</li>
+<li><a href="#signals-and-cleanup">Signals and cleanup</a>
+</li>
+<li><a href="#exit-status">Exit status</a>
+</li>
+<li><a href="#examples">Examples</a>
+</li>
+<li><a href="#license">License</a>
+</li>
+</ul>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li>A C99 compiler or newer.
+</li>
+<li>OpenSSL 1.1.0 or newer development headers and the Crypto library.
+</li>
+<li>Libgcrypt development headers and library.
+</li>
+<li>LibRHash development headers and library.
+</li>
+<li>CMake 3.10 or newer when using CMake.
+</li>
+<li>Meson 0.54 or newer when using Meson.
+</li>
+</ul>
+<p>OpenSSL versions older than 1.1.0 are not supported; the source and both build systems enforce this minimum. All three hashing libraries are link-time dependencies. Runtime algorithm availability is still probed because an installed library version may not provide every algorithm in the registry.</p>
+<p>The automatic native provider order is:</p>
+<pre><code class="language-text">OpenSSL -&gt; Libgcrypt -&gt; LibRHash
+</code></pre>
+<p>A provider that does not actually support the requested algorithm is skipped.</p>
+<h2 id="building">Building</h2>
+<h3 id="direct-compiler-build">Direct compiler build</h3>
+<p>With OpenSSL 1.1.0+ and the other dependencies in the compiler&#39;s normal search paths:</p>
+<pre><code class="language-sh">gcc -std=c99 -O2 -Wall -Wextra -Wpedantic checksum-manifest.c -o checksum-manifest -lcrypto -lgcrypt -lrhash
+</code></pre>
+<p>The same command works with Clang by replacing <code>gcc</code> with <code>clang</code>.</p>
+<p>On MinGW the output name can be made explicit:</p>
+<pre><code class="language-sh">gcc -std=c99 -O2 -Wall -Wextra -Wpedantic checksum-manifest.c -o checksum-manifest.exe -lcrypto -lgcrypt -lrhash
+</code></pre>
+<p>With explicit include and library directories:</p>
+<pre><code class="language-sh">gcc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+  -I/opt/openssl/include \
+  -I/opt/libgcrypt/include \
+  -I/opt/rhash/include \
+  checksum-manifest.c -o checksum-manifest \
+  -L/opt/openssl/lib \
+  -L/opt/libgcrypt/lib \
+  -L/opt/rhash/lib \
+  -lcrypto -lgcrypt -lrhash
+</code></pre>
+<p>GCC/Clang compiler search variables can also be used. For example:</p>
+<pre><code class="language-sh">export CPATH=/opt/openssl/include:/opt/libgcrypt/include:/opt/rhash/include
+export LIBRARY_PATH=/opt/openssl/lib:/opt/libgcrypt/lib:/opt/rhash/lib
+
+gcc -std=c99 -O2 -Wall -Wextra -Wpedantic checksum-manifest.c -o checksum-manifest -lcrypto -lgcrypt -lrhash
+</code></pre>
+<p>On Windows, use the native environment-variable list separator (<code>;</code>). For example in <code>cmd.exe</code>:</p>
+<pre><code class="language-bat">set CPATH=C:\openssl\include;C:\libgcrypt\include;C:\RHash-1.4.6\librhash
+set LIBRARY_PATH=C:\openssl\lib;C:\libgcrypt\lib;C:\RHash-1.4.6\librhash
+
+gcc -std=c99 -O2 -Wall -Wextra -Wpedantic checksum-manifest.c -o checksum-manifest.exe -lcrypto -lgcrypt -lrhash
+</code></pre>
+<p>Each include entry must be the directory the compiler searches directly. In particular, the LibRHash include entry normally points to the directory that contains <code>rhash.h</code> itself (for the upstream source tree that is typically <code>RHash-1.4.6\librhash</code>).</p>
+<h3 id="cmake">CMake</h3>
+<p>Automatic discovery:</p>
+<pre><code class="language-sh">cmake -S . -B build
+cmake --build build
+</code></pre>
+<p>Normal CMake discovery requires OpenSSL 1.1.0 or newer. The same minimum is checked when custom OpenSSL include/library overrides are used.</p>
+<p>CMake accepts an include directory, an exact library file, or a library search directory for every backend:</p>
+<pre><code class="language-text">CM_OPENSSL_INCLUDE_DIR
+CM_OPENSSL_LIBRARY_DIR
+CM_OPENSSL_LIBRARY
+
+CM_GCRYPT_INCLUDE_DIR
+CM_GCRYPT_LIBRARY_DIR
+CM_GCRYPT_LIBRARY
+
+CM_RHASH_INCLUDE_DIR
+CM_RHASH_LIBRARY_DIR
+CM_RHASH_LIBRARY
+</code></pre>
+<p>Example using exact library files:</p>
+<pre><code class="language-sh">cmake -S . -B build \
+  -DCM_OPENSSL_INCLUDE_DIR=/opt/openssl/include \
+  -DCM_OPENSSL_LIBRARY=/opt/openssl/lib/libcrypto.so \
+  -DCM_GCRYPT_INCLUDE_DIR=/opt/libgcrypt/include \
+  -DCM_GCRYPT_LIBRARY=/opt/libgcrypt/lib/libgcrypt.so \
+  -DCM_RHASH_INCLUDE_DIR=/opt/rhash/include \
+  -DCM_RHASH_LIBRARY=/opt/rhash/lib/librhash.so
+
+cmake --build build
+</code></pre>
+<p>Example using library directories:</p>
+<pre><code class="language-sh">cmake -S . -B build \
+  -DCM_OPENSSL_INCLUDE_DIR=/opt/openssl/include \
+  -DCM_OPENSSL_LIBRARY_DIR=/opt/openssl/lib \
+  -DCM_GCRYPT_INCLUDE_DIR=/opt/libgcrypt/include \
+  -DCM_GCRYPT_LIBRARY_DIR=/opt/libgcrypt/lib \
+  -DCM_RHASH_INCLUDE_DIR=/opt/rhash/include \
+  -DCM_RHASH_LIBRARY_DIR=/opt/rhash/lib
+
+cmake --build build
+</code></pre>
+<p>For GCC/Clang workflows, the project also imports <code>CPATH</code>, <code>C_INCLUDE_PATH</code>, and <code>LIBRARY_PATH</code> as CMake discovery hints. This is intentional: those are compiler search variables, whereas CMake normally documents its own <code>CMAKE_INCLUDE_PATH</code> and <code>CMAKE_LIBRARY_PATH</code> search variables. With this project, the same environment used by a successful direct GCC/Clang build is also added to CMake&#39;s dependency search. CMake-native <code>CMAKE_INCLUDE_PATH</code>, <code>CMAKE_LIBRARY_PATH</code>, and <code>CMAKE_PREFIX_PATH</code> remain supported normally.</p>
+<p>On MinGW, the <code>CPATH</code> entry for LibRHash must point to the directory containing <code>rhash.h</code>; for an unpacked RHash 1.4.6 tree this is normally <code>C:\RHash-1.4.6\librhash</code>. The <code>LIBRARY_PATH</code> entry must point to the directory containing the link library/import library.</p>
+<h3 id="meson">Meson</h3>
+<p>Meson verifies that the selected OpenSSL headers are version 1.1.0 or newer before creating the build target.</p>
+<p>Normal discovery:</p>
+<pre><code class="language-sh">meson setup build
+meson compile -C build
+</code></pre>
+<p>Project-specific options are available again for non-standard SDK layouts:</p>
+<pre><code class="language-text">openssl_include_dir
+openssl_library_dir
+openssl_library
+
+gcrypt_include_dir
+gcrypt_library_dir
+gcrypt_library
+
+rhash_include_dir
+rhash_library_dir
+rhash_library
+</code></pre>
+<p>Example:</p>
+<pre><code class="language-sh">meson setup build \
+  -Dopenssl_include_dir=/opt/openssl/include \
+  -Dopenssl_library_dir=/opt/openssl/lib \
+  -Dgcrypt_include_dir=/opt/libgcrypt/include \
+  -Dgcrypt_library_dir=/opt/libgcrypt/lib \
+  -Drhash_include_dir=/opt/rhash/include \
+  -Drhash_library_dir=/opt/rhash/lib
+
+meson compile -C build
+</code></pre>
+<p>Exact library files may be supplied instead of library directories:</p>
+<pre><code class="language-sh">meson setup build \
+  -Dopenssl_include_dir=/opt/openssl/include \
+  -Dopenssl_library=/opt/openssl/lib/libcrypto.so \
+  -Dgcrypt_include_dir=/opt/libgcrypt/include \
+  -Dgcrypt_library=/opt/libgcrypt/lib/libgcrypt.so \
+  -Drhash_include_dir=/opt/rhash/include \
+  -Drhash_library=/opt/rhash/lib/librhash.so
+
+meson compile -C build
+</code></pre>
+<p>When no project-specific override is supplied, Meson checks headers with the configured C compiler and resolves the three libraries with the compiler&#39;s library search. GCC/Clang therefore honor <code>CPATH</code>/<code>C_INCLUDE_PATH</code> for headers and <code>LIBRARY_PATH</code> for libraries in the same environment used for direct compiler builds. Explicit <code>-D..._include_dir</code> and <code>-D..._library_dir</code> options remain the most predictable choice for unusual SDK layouts and cross builds.</p>
+<h2 id="usage">Usage</h2>
+<pre><code class="language-text">checksum-manifest check ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
+checksum-manifest c ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
+checksum-manifest hash ALGORITHMS [OPTIONS] PATH
+checksum-manifest h ALGORITHMS [OPTIONS] PATH
+checksum-manifest generate ALGORITHMS [OPTIONS] PATH
+checksum-manifest g ALGORITHMS [OPTIONS] PATH
+checksum-manifest derive ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
+checksum-manifest d ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
+checksum-manifest format ALGORITHMS [OPTIONS] PATH
+checksum-manifest f ALGORITHMS [OPTIONS] PATH
+checksum-manifest join ALGORITHMS [OPTIONS] PATH
+checksum-manifest j ALGORITHMS [OPTIONS] PATH
+checksum-manifest split ALGORITHM [OPTIONS] CHECKSUM_FILE
+checksum-manifest s ALGORITHM [OPTIONS] CHECKSUM_FILE
+checksum-manifest remove ALGORITHMS [OPTIONS] PATH
+checksum-manifest r ALGORITHMS [OPTIONS] PATH
+checksum-manifest (-h | --help | -v | --version)
+</code></pre>
+<p>The first argument is the mode. <code>c</code>, <code>h</code>, <code>g</code>, <code>d</code>, <code>f</code>, <code>j</code>, <code>s</code>, and <code>r</code> are aliases for <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, <code>split</code>, and <code>remove</code>.</p>
+<p>Long options that take a value accept both <code>--option VALUE</code> and <code>--option=VALUE</code>. Use <code>--</code> to end option parsing before a positional path that begins with <code>-</code>.</p>
+<pre><code class="language-text">-r, --recursive
+-o, --output PATH
+-F, --from ALGORITHMS
+-d, --delimiter VALUE
+-n, --newline MODE
+-s, --path-separator MODE
+-t, --tools SPEC
+-f, --filter PATTERN
+-C, --filter-case MODE
+-D, --digest-only
+-l, --layout MODE
+-N, --natural-sort
+-L, --lexicographic-sort
+-T, --update-timestamp
+-b, --backup
+-h, --help
+-v, --version
+</code></pre>
+<p>Option applicability:</p>
+<ul>
+<li><code>--recursive</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, <code>remove</code>; invalid with <code>split</code>.
+</li>
+<li><code>--output</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>join</code>, <code>split</code>; invalid with <code>format</code> and <code>remove</code>.
+</li>
+<li><code>--from</code>: required by <code>derive</code>; invalid in every other mode.
+</li>
+<li><code>--delimiter</code>, <code>--newline</code>, <code>--path-separator</code>: every mode except <code>remove</code>.
+</li>
+<li><code>--tools</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code> only.
+</li>
+<li><code>--filter</code>, <code>--filter-case</code>: <code>hash</code> and <code>generate</code> only. <code>--filter-case</code> requires explicit <code>--filter</code>.
+</li>
+<li><code>--digest-only</code>: <code>hash</code> only.
+</li>
+<li><code>--layout</code>: <code>generate</code> only.
+</li>
+<li><code>--natural-sort</code>, <code>--lexicographic-sort</code>: <code>hash</code>, <code>generate</code>, <code>join</code>, <code>derive</code>; for <code>generate</code>, <code>--layout single</code> is required. The two sort options are mutually exclusive.
+</li>
+<li><code>--update-timestamp</code>: <code>derive</code>, <code>format</code>, <code>remove</code> only.
+</li>
+<li><code>--backup</code>: <code>format</code> only.
+</li>
+</ul>
+<h2 id="modes">Modes</h2>
+<h3 id="check">check</h3>
+<p><code>check</code> discovers selected manifests and verifies every recognized entry.</p>
+<pre><code class="language-sh">checksum-manifest check md5 /data
+checksum-manifest check md5 /data/set1.md5 /data/set2.md5
+checksum-manifest c md5,sha256 -r /data
+</code></pre>
+<p><code>check</code> accepts one directory, one explicit manifest file, or multiple explicit manifest files. When exactly one algorithm is selected, every explicit file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or <code>all</code>, every explicit file must have a case-insensitive filename extension matching one of the selected algorithms so the algorithm can be determined unambiguously. Directory discovery always remains extension-based. When multiple inputs are supplied, every input must be a regular file; mixed file/directory input and multiple directories are rejected. Duplicate explicit file paths resolve to one verification pass. <code>--recursive</code> applies when the single input is a directory.</p>
+<p>For each selected algorithm that has at least one discovered manifest, one native provider is selected before verification starts and is used for the whole run. A provider failure during hashing is reported as <code>ERROR</code>; provider selection is not changed mid-run.</p>
+<h3 id="hash">hash</h3>
+<p><code>hash</code> calculates digests and writes hash output directly to stdout. Alias: <code>h</code>. It accepts the same built-in algorithm selectors as <code>generate</code>, including <code>all</code> and the <code>sfv</code> alias for <code>crc32</code>.</p>
+<pre><code class="language-sh">checksum-manifest hash sha256 /data/file.bin
+checksum-manifest hash sha256 -D /data/file.bin
+checksum-manifest h md5,sha256 -r -f '*.bin' /data
+checksum-manifest hash sha256 -r -o hashes.txt /data
+</code></pre>
+<p>Without <code>-D/--digest-only</code>, one selected algorithm uses that algorithm&#39;s normal manifest record grammar. With multiple algorithms, output is file-major and algorithms appear in selector order; each standard record is prefixed with an aligned algorithm tag:</p>
+<pre><code class="language-text">[md5]     abc...  file.bin
+[sha256]  def...  file.bin
+</code></pre>
+<p>CRC32/CRC32C keep their normal filename-first record grammar after the tag. With <code>-D/--digest-only</code>, a single algorithm writes only the hexadecimal digest. Multiple algorithms retain the same aligned algorithm tag but omit the filename and manifest record formatting:</p>
+<pre><code class="language-text">[md5]     abc...
+[sha256]  def...
+</code></pre>
+<p>Digest-only output remains file-major and follows selector order. <code>--delimiter</code> and <code>--path-separator</code> are accepted but do not affect digest-only output. Without <code>--digest-only</code>, output paths are relative to the input root: a file input uses its basename, while directory input preserves paths below that directory. <code>--path-separator</code> controls rendering.</p>
+<p><code>hash</code> prints no <code>Tools:</code>, <code>Entries:</code>, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. <code>-o/--output</code> writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different <code>-o</code> pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or <code>-o</code> output ends with a newline. Early downstream pipe closure is treated as normal successful termination.</p>
+<p>The supported options are <code>-r/--recursive</code>, <code>-o/--output</code>, <code>-d/--delimiter</code>, <code>-n/--newline</code>, <code>-s/--path-separator</code>, <code>-t/--tools</code>, <code>-f/--filter</code>, <code>-C/--filter-case</code>, <code>-D/--digest-only</code>, <code>-N/--natural-sort</code>, and <code>-L/--lexicographic-sort</code>. Their defaults match <code>generate</code> where applicable: filter <code>*</code>, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.</p>
+<p>If one file or one algorithm fails to hash, the error is written to stderr, remaining work continues, successful records are retained, and the final status is nonzero.</p>
+<h3 id="generate">generate</h3>
+<p><code>generate</code> hashes regular files and writes checksum manifests.</p>
+<pre><code class="language-sh">checksum-manifest generate md5 /data
+checksum-manifest g md5,sha256 -r -f '*.zip' /data
+</code></pre>
+<p>The default filter is <code>*</code>, matching is case-sensitive, and the default layout is <code>separate</code>.</p>
+<p><code>-f/--filter</code> accepts a portable shell-style basename pattern. <code>-C/--filter-case</code> selects <code>sensitive</code> or <code>insensitive</code>; it requires explicit <code>--filter</code>. ASCII case folding is used in insensitive mode.</p>
+<p><code>-l/--layout</code> accepts:</p>
+<ul>
+<li><code>separate</code>: one manifest per source file and algorithm; the default.
+</li>
+<li><code>single</code>: one combined manifest per selected algorithm.
+</li>
+</ul>
+<p>In <code>single</code> layout, <code>-N/--natural-sort</code> and <code>-L/--lexicographic-sort</code> control discovery order inside each directory. Traversal remains depth-first; sorting is not a final global sort over the completed tree.</p>
+<p>Natural sorting compares digit runs numerically and non-digit chunks bytewise. Lexicographic sorting is bytewise.</p>
+<h3 id="derive">derive</h3>
+<p><code>derive</code> uses the valid entry paths in existing reference manifests to create missing target manifests and to check path coverage when a target already exists.</p>
+<pre><code class="language-sh">checksum-manifest derive sha256,sha512 -F md5,sha1 /data/releases
+checksum-manifest d sha256 -F md5 -r -N -o /tmp/derived /data/releases
+</code></pre>
+<p>The positional selector is the target algorithm list. <code>-F/--from</code> selects reference-manifest extensions and is required.</p>
+<p>Existing target manifests are never rehashed or rewritten. Their valid entry paths are compared lexically after the selected path-separator interpretation. Referenced data files do not need to exist for this comparison. Every reference occurrence must have a matching target occurrence; duplicate occurrences therefore matter. Extra target entries are allowed.</p>
+<p>When a target is missing, one output entry is created for every valid reference entry. The missing target is written only if every required source file can be represented, read, and hashed, so a partial target manifest is not committed. <code>-N</code> or <code>-L</code> can reorder valid reference entries before creation.</p>
+<p>When several reference algorithms with the same stem could create the same missing target, <code>--from</code> order is the creation precedence. Later references compare against the target already created.</p>
+<p>Status labels are:</p>
+<ul>
+<li><code>OUTPUT</code>: a missing target was created.
+</li>
+<li><code>COMPLETE</code>: an existing target covers all reference occurrences.
+</li>
+<li><code>INCOMPLETE</code>: an existing target is missing at least one reference occurrence.
+</li>
+<li><code>MISSING</code>: one reference occurrence is not covered by an existing target.
+</li>
+</ul>
+<p>By default, a newly created target copies the reference manifest modification time and target-directory modification times are preserved best-effort. <code>-T/--update-timestamp</code> leaves these times to normal filesystem behavior.</p>
+<h3 id="format">format</h3>
+<p><code>format</code> rewrites selected manifest formatting without recalculating digests.</p>
+<p>Before scanning/rewrite begins it prints a plan and requires explicit <code>y</code> or <code>yes</code> confirmation, case-insensitively. Any other answer cancels with success and no rewrite.</p>
+<p>Recognized entry formatting may change according to delimiter, newline, and path-separator options. Digest text and non-entry lines are preserved. A manifest containing NUL is refused. Symbolic-link manifest paths are not rewritten.</p>
+<p>With <code>-b/--backup</code>, a collision-safe <code>.cmbak</code> backup is created before the manifest is rewritten. Backup creation failure prevents that manifest from being rewritten. A backup is still created when the resulting formatted content is unchanged.</p>
+<p>Without <code>-T</code>, manifest, backup, and scanned-directory modification times are preserved best-effort. <code>-T</code> leaves timestamp changes to normal filesystem behavior.</p>
+<h3 id="join">join</h3>
+<p><code>join</code> combines valid entries from selected manifests into one output per algorithm.</p>
+<pre><code class="language-sh">checksum-manifest join sha256 -r /data
+checksum-manifest join sha256 -r -L -o /tmp/checksums.sha256 /data
+</code></pre>
+<p>Entry paths are rebased relative to the <code>PATH</code> source base: when <code>PATH</code> is a directory, they are relative to that directory; when <code>PATH</code> is a manifest file, they are relative to that manifest&#39;s parent directory. Supplying <code>-o/--output</code> changes only where the joined manifest is written; it does not rebase entry paths relative to the output location. Discovery can use natural or lexicographic ordering.</p>
+<p>For each algorithm, output is all-or-nothing: an unreadable selected manifest, a selected manifest with zero valid entries, or an unrepresentable required path prevents that algorithm&#39;s joined output from being committed.</p>
+<h3 id="split">split</h3>
+<p><code>split</code> requires exactly one algorithm/extension selector and one combined manifest file. <code>all</code> and <code>--recursive</code> are invalid.</p>
+<pre><code class="language-sh">checksum-manifest split sha256 checksums.sha256
+checksum-manifest split shake256 -o /tmp/split checksums.shake256
+</code></pre>
+<p>Each valid input entry is written to the corresponding per-entry manifest. Records that map to the same output manifest are grouped together. Entry paths are rebased relative to each newly created manifest.</p>
+<p>Without <code>-o</code>, outputs are confined below the input manifest directory. Absolute entries and escaping parent-relative entries are rejected. With <code>-o DIR</code>, absolute entries are re-rooted below <code>DIR</code>; escaping parent-relative entries are still rejected. Existing parent components are checked so a symbolic link cannot redirect output outside the safety root.</p>
+<p><code>split</code> can have partial success: safe entries may be written while invalid/escaping entries are reported as errors.</p>
+<h3 id="remove">remove</h3>
+<p><code>remove</code> deletes selected manifest files after three confirmations.</p>
+<p>The first two confirmations accept case-insensitive <code>y</code> or <code>yes</code>. The final confirmation must be exactly lowercase <code>yes</code> with no surrounding whitespace. Discovery and deletion start only after the final confirmation.</p>
+<p>Each selected manifest is removed independently and deletion continues after individual failures. Without <code>-T</code>, parent-directory modification times changed by deletion are restored best-effort; <code>-T</code> disables that restoration.</p>
+<h2 id="algorithms-and-selectors">Algorithms and selectors</h2>
+<p>Built-in hashing algorithms:</p>
+<pre><code class="language-text">crc32, crc32c, md5, sha1, sha224, sha256, sha384, sha512,
+blake2s, blake2b, blake3, whirlpool,
+keccak-224, keccak-256, keccak-384, keccak-512,
+sha3-224, sha3-256, sha3-384, sha3-512
+</code></pre>
+<p><code>check</code>, <code>hash</code>, <code>generate</code>, and the target selector of <code>derive</code> require built-in hashing algorithms.</p>
+<p><code>format</code>, <code>join</code>, <code>split</code>, <code>remove</code>, and <code>derive -F/--from</code> also accept explicit custom algorithm/extension names matching:</p>
+<pre><code class="language-text">[A-Za-z0-9][A-Za-z0-9._+-]*
+</code></pre>
+<p>Matching is case-insensitive using ASCII folding.</p>
+<p><code>all</code> is a standalone case-insensitive keyword and cannot be combined with other comma-separated names. For built-in target selection it expands to the full built-in list. For transform/reference selectors it expands to the same built-in extension list; it does not discover arbitrary unknown extensions. <code>split</code> requires exactly one selector and rejects <code>all</code>.</p>
+<p><code>sfv</code> is a reserved case-insensitive alias for <code>crc32</code>. CRC32 uses <code>.sfv</code>; CRC32C uses <code>.crc32c</code>; every other built-in algorithm uses <code>.&lt;algorithm&gt;</code>.</p>
+<p>Duplicate selector names are ignored after normalization.</p>
+<h2 id="manifest-discovery">Manifest discovery</h2>
+<p>Manifest extension matching is case-insensitive:</p>
+<pre><code class="language-text">FILE.MD5
+file.Md5
+file.md5
+</code></pre>
+<p>are all discovered as MD5 manifests.</p>
+<p>CRC32 discovery uses <code>.sfv</code>; <code>.crc32</code> is not a CRC32 manifest.</p>
+<p>For <code>check</code>, when exactly one algorithm is selected, an explicit manifest file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or <code>all</code>, explicit files require a case-insensitive extension matching one of the selected algorithms for disambiguation. Directory discovery remains extension-based in all cases.</p>
+<p>Without <code>--recursive</code>, only the supplied directory is scanned. With it, subdirectories are scanned depth-first. Hidden files and directories are included. Directory symlinks encountered during traversal are not followed. If the supplied starting path itself resolves to a directory, that starting directory is accepted.</p>
+<p>Unreadable/unsearchable directories are operational errors and produce a nonzero final status.</p>
+<h2 id="hash-and-generate-file-selection">Hash and generate file selection</h2>
+<p><code>hash</code> and <code>generate</code> accept an existing regular file or directory.</p>
+<p>The filter is applied to each source basename and supports the portable subset:</p>
+<ul>
+<li><code>*</code>
+</li>
+<li><code>?</code>
+</li>
+<li>bracket expressions such as <code>[abc]</code> and <code>[!abc]</code>
+</li>
+<li>ranges
+</li>
+<li>POSIX bracket classes
+</li>
+<li>backslash escaping
+</li>
+</ul>
+<p>Extended glob operators are not part of the contract.</p>
+<p>Examples:</p>
+<pre><code class="language-text">*
+*.zip
+backup-?.tar
+[ABC]*.iso
+</code></pre>
+<p>In case-insensitive mode, ASCII letters are folded. <code>[[:upper:]]</code> and <code>[[:lower:]]</code> both behave like ASCII <code>[[:alpha:]]</code>. Non-ASCII case equivalents are not folded.</p>
+<p>Generated manifests and <code>hash -o</code> output files are ordinary files on later scans. If an old output is inside the scanned tree and matches the active filter, it can become a source file on a later <code>hash</code> or <code>generate</code> run.</p>
+<h2 id="entry-grammar">Entry grammar</h2>
+<p><code>check</code>, <code>derive</code>, <code>format</code>, <code>join</code>, and <code>split</code> share the same parser.</p>
+<p>For non-CRC algorithms the recognized form is conceptually:</p>
+<pre><code class="language-regex">^([A-Fa-f0-9]+)(  | \*|\t\*| |\t)(.+)$
+</code></pre>
+<p>Accepted digest/filename separators are:</p>
+<pre><code class="language-text">&lt;space&gt;&lt;space&gt;
+&lt;space&gt;*
+&lt;TAB&gt;*
+&lt;space&gt;
+&lt;TAB&gt;
+</code></pre>
+<p>The parser backtracks on ambiguous delimiters so the filename must remain non-empty.</p>
+<p>CRC32 and CRC32C are filename-first:</p>
+<pre><code class="language-text">FILENAME&lt;one-or-more-spaces-or-tabs&gt;DIGEST
+</code></pre>
+<p>Because whitespace is the field separator, a CRC filename ending in a space or tab is inherently ambiguous.</p>
+<p>Digest characters must be hexadecimal, but digest length is intentionally not validated by the parser.</p>
+<p>Blank lines and unescaped lines beginning with <code>#</code> or <code>;</code> are ignored. <code>check</code>, <code>derive</code>, <code>join</code>, and <code>split</code> skip unrecognized lines and NUL-containing lines. <code>format</code> refuses to rewrite a manifest containing NUL but preserves other non-entry text.</p>
+<p>Escaped records decode these filename sequences:</p>
+<pre><code class="language-text">\\   literal backslash
+\n   LF
+\r   CR
+</code></pre>
+<p>A selected manifest with zero valid entries is an error in <code>check</code>, <code>join</code>, and <code>split</code>. In <code>derive</code>, a reference/source manifest with zero valid entries is an error, but an existing target manifest with zero valid entries remains a valid comparison target: a non-empty reference will report its occurrences as <code>MISSING</code> and the target as <code>INCOMPLETE</code>. <code>format</code> may process a zero-entry manifest because non-entry text is preserved/reformatted as appropriate.</p>
+<h2 id="delimiter-option">Delimiter option</h2>
+<p>For every non-CRC algorithm, <code>-d/--delimiter</code> accepts exactly:</p>
+<pre><code class="language-text">&lt;space&gt;&lt;space&gt;
+&lt;space&gt;*
+</code></pre>
+<p>Shell examples normally quote these as <code>'  '</code> and <code>' *'</code>.</p>
+<p>The default is two spaces. <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, and <code>split</code> use the selected delimiter when writing non-CRC records. <code>check</code> recognition is independent of the selected output delimiter.</p>
+<p>For CRC32/CRC32C the option is accepted but ignored; CRC output uses its filename-first single-space form.</p>
+<h2 id="verification-results">Verification results</h2>
+<p><code>check</code> uses these labels:</p>
+<pre><code class="language-text">[VALID]:   ./a/b.tar.gz [sha256]
+[INVALID]: ./f/e/c.tar.gz [md5]
+[UNREAD]:  ./missing.iso [sha256]
+[ERROR]:   ./problem.bin [md5]
+</code></pre>
+<ul>
+<li><code>VALID</code>: calculated digest matches.
+</li>
+<li><code>INVALID</code>: hashing succeeded but the digest does not match.
+</li>
+<li><code>UNREAD</code>: target is missing, not a regular file, or not readable.
+</li>
+<li><code>ERROR</code>: another verification/hash/provider error occurred.
+</li>
+</ul>
+<p>Each checked-file result ends with the normalized lowercase algorithm in brackets. <code>Entries:</code> counts parsed entries by algorithm, including failed checks; manifest-level errors are not entry counts.</p>
+<p><code>Tools:</code> reports the native provider selected for each algorithm that actually required hashing.</p>
+<h2 id="native-hash-providers">Native hash providers</h2>
+<p>Hashing is always in-process. No external executable is launched.</p>
+<p>Automatic provider preference is:</p>
+<pre><code class="language-text">OpenSSL -&gt; Libgcrypt -&gt; LibRHash
+</code></pre>
+<p>For each algorithm that actually requires hashing, provider availability is probed at runtime. A linked provider can therefore be skipped when that provider/library version lacks the requested algorithm.</p>
+<p>Use <code>-t/--tools</code> with <code>check</code>, <code>hash</code>, <code>generate</code>, or <code>derive</code> to pin a provider:</p>
+<pre><code class="language-sh">checksum-manifest generate md5,sha256 \
+  -t 'md5:librhash,sha256:openssl' /data
+</code></pre>
+<p>Specification format:</p>
+<pre><code class="language-text">ALGORITHM:PROVIDER[,ALGORITHM:PROVIDER...]
+</code></pre>
+<p>Provider names:</p>
+<pre><code class="language-text">openssl
+libgcrypt
+gcrypt
+librhash
+rhash
+</code></pre>
+<p><code>gcrypt</code> normalizes to <code>libgcrypt</code>; <code>rhash</code> normalizes to <code>librhash</code>. <code>sfv</code> may be used where <code>crc32</code> is selected and normalizes to CRC32.</p>
+<p>A pinned algorithm does not fall back. Unlisted algorithms use automatic provider selection. A pin that is structurally impossible according to the central algorithm registry is rejected during command-line validation.</p>
+<p><code>format</code>, <code>join</code>, <code>split</code>, and <code>remove</code> do not hash file contents and do not require runtime provider selection. <code>derive</code> requires providers only for target manifests that are missing and must actually be created.</p>
+<h2 id="output-behavior">Output behavior</h2>
+<p>On POSIX, files newly created by <code>check -o</code>, <code>hash -o</code>, <code>generate</code>, <code>derive</code>, <code>join</code>, and <code>split</code> are normalized to mode <code>0644</code>. Hash output redirected by the shell to a regular stdout file (for example <code>&gt; hashes.txt</code>) is also normalized to mode <code>0644</code>; pipes are not chmodded. <code>format</code> preserves existing manifest permission bits and <code>.cmbak</code> backups preserve source permissions. Other metadata such as inode identity, ownership, ACLs, extended attributes, security labels, capabilities, and hard-link topology is not guaranteed when a manifest is atomically replaced.</p>
+<h3 id="check-output">check output</h3>
+<pre><code class="language-sh">checksum-manifest check sha256 -o report.txt /data
+</code></pre>
+<p>The report contains verification lines, <code>Tools:</code>, per-algorithm <code>Entries:</code>, and <code>Summary:</code>. The terminal reports the actual collision-safe report path.</p>
+<p>With multiple explicit manifest inputs, displayed target paths are based on the current working directory; file resolution itself remains relative to each individual manifest directory.</p>
+<h3 id="hash-output">hash output</h3>
+<p>Without <code>-o</code>, <code>hash</code> writes records to stdout and nothing else. Shell redirection such as <code>checksum-manifest hash sha256 PATH &gt; hashes.txt</code> therefore captures the same bytes that <code>-o hashes.txt</code> would write when no collision changes the <code>-o</code> pathname.</p>
+<p>With one algorithm the stream is standard manifest grammar. With multiple algorithms each line starts with an aligned <code>[algorithm]</code> tag, and records are ordered file-major with algorithms in selector order. Paths are relative to the input root, not to the current directory or the <code>-o</code> file location. If stdout is redirected to a regular file inside a scanned directory input, that stdout file is excluded from hash input discovery so it does not hash itself. Do not redirect stdout directly onto the input file itself: the shell truncates that file before the utility starts, and <code>hash</code> rejects the detected overlap.</p>
+<p><code>-o/--output</code> preserves an existing destination and selects a report-style collision-safe pathname such as <code>hashes-A1B2C3D4.txt</code>. When a collision selects an alternate pathname, that actual path is reported on stderr. Shell <code>&gt;</code> redirection is controlled by the shell and therefore does not use the utility&#39;s collision-safe naming.</p>
+<h3 id="generate-output">generate output</h3>
+<p><code>Entries:</code> lists per-algorithm counts and a total.</p>
+<p>With default <code>separate</code> layout and no <code>-o</code>, one manifest is created beside each source file for each selected algorithm. A collision preserves the existing file and adds an eight-character hexadecimal suffix before the checksum extension:</p>
+<pre><code class="language-text">archive.zip.md5
+archive.zip-A1B2C3D4.md5
+</code></pre>
+<p>With <code>separate -o DIR</code>, <code>DIR</code> is created as needed and the source tree is recreated below it. Generated records refer back to their source using relative paths.</p>
+<p>With <code>single</code> layout, one combined manifest is generated per selected algorithm. Without <code>-o</code>, outputs are placed in the supplied directory or beside a supplied source file:</p>
+<pre><code class="language-text">checksums.md5
+checksums.sha256
+checksums.sfv
+</code></pre>
+<p>A default-name collision produces, for example:</p>
+<pre><code class="language-text">checksums-A1B2C3D4.sha256
+</code></pre>
+<p>For one selected algorithm, <code>single -o</code> may be an existing directory or an explicit output file with the expected extension. For multiple algorithms, <code>-o</code> must be an existing directory.</p>
+<p>If discovery succeeds and the filter selects zero files, <code>generate</code> succeeds with zero files/entries/outputs and does not require provider selection.</p>
+<h3 id="derive-output">derive output</h3>
+<p>Without <code>-o</code>, missing targets are written beside their reference manifests using the same stem and target extension. With <code>-o DIRECTORY</code>, the reference manifest&#39;s relative subdirectory structure is mirrored below the output root. Entry text is not rebased merely because an output root was supplied.</p>
+<p>Existing targets are compared and never rewritten. Missing targets use their semantic target path; <code>derive</code> does not substitute a random collision name.</p>
+<p>By default, a newly created target attempts to copy the reference manifest mtime and preserves affected target-directory mtimes best-effort. <code>-T</code> disables this preservation.</p>
+<h3 id="format-behavior">format behavior</h3>
+<p><code>format</code> rewrites at the original pathname. When content changes, a temporary file in the same directory is written and atomically replaces the old pathname. Permission bits are preserved. The original inode and non-permission metadata are not guaranteed to survive replacement.</p>
+<p>Without <code>-T</code>, modification times of manifests, backups, and scanned directories are preserved best-effort. Preservation failures are aggregated as warnings rather than stopping formatting.</p>
+<p>With <code>-b</code>, <code>.cmbak</code> is created before rewrite. Collision-safe naming preserves an existing backup.</p>
+<h3 id="join-output">join output</h3>
+<p>Without <code>-o</code>, joined outputs are placed in <code>PATH</code> when it is a directory, or beside <code>PATH</code> when <code>PATH</code> is a manifest file.</p>
+<p>Default names are:</p>
+<pre><code class="language-text">checksums.md5
+checksums.sha256
+checksums.sfv
+checksums.crc32c
+</code></pre>
+<p>With one algorithm, <code>-o</code> may be an existing directory or an explicit output file with the expected extension. With multiple algorithms, <code>-o</code> must be an existing directory.</p>
+<p>If a selected manifest for one algorithm is unreadable or contains zero valid entries, that algorithm&#39;s output is not committed.</p>
+<h3 id="split-output">split output</h3>
+<p>Without <code>-o</code>, outputs are confined below the input manifest directory. With <code>-o DIR</code>, the entry tree is recreated below <code>DIR</code>, including safe re-rooting of absolute entries.</p>
+<p>Lexical containment and existing-parent checks prevent <code>..</code> and symbolic-link escape outside the output root.</p>
+<p>Collisions preserve existing output files and insert an eight-character hexadecimal suffix before the checksum extension.</p>
+<h3 id="remove-behavior">remove behavior</h3>
+<p><code>remove</code> creates no output files. After final confirmation, each selected manifest is unlinked independently. Errors do not stop later deletions. Without <code>-T</code>, affected parent directory mtimes are restored best-effort.</p>
+<h3 id="collision-handling">Collision handling</h3>
+<p>Existing output files are never silently overwritten by <code>check -o</code>, <code>generate</code>, <code>join</code>, or <code>split</code>.</p>
+<p>Report example:</p>
+<pre><code class="language-text">report.txt -&gt; report-A1B2C3D4.txt
+</code></pre>
+<p>Manifest examples:</p>
+<pre><code class="language-text">archive.zip.md5 -&gt; archive.zip-A1B2C3D4.md5
+checksums.sha256 -&gt; checksums-92AF01CC.sha256
+movie.mkv.sfv -&gt; movie.mkv-1122AABB.sfv
+</code></pre>
+<p>For generic <code>join</code> collision names, the output form is:</p>
+<pre><code class="language-text">checksum-A1B2C3D4.md5
+checksum-92AF01CC.sfv
+</code></pre>
+<p><code>derive</code> intentionally does not use random collision substitution because its target pathname has semantic meaning.</p>
+<h2 id="newline-modes">Newline modes</h2>
+<p><code>-n/--newline</code> is case-insensitive:</p>
+<table>
+<thead>
+<tr>
+<th>Values</th>
+<th>Output newline</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>unix</code>, <code>lf</code></td>
+<td>LF</td>
+</tr>
+<tr>
+<td><code>windows</code>, <code>crlf</code></td>
+<td>CRLF</td>
+</tr>
+<tr>
+<td><code>classic-mac</code>, <code>cr</code></td>
+<td>CR</td>
+</tr>
+<tr>
+<td><code>system</code></td>
+<td>native platform newline</td>
+</tr>
+</tbody></table>
+<p>Default: <code>unix</code> / LF.</p>
+<p>Input manifests can contain LF, CRLF, or CR. The option controls newly written reports/manifests and <code>format</code> output.</p>
+<h2 id="path-separators">Path separators</h2>
+<p><code>-s/--path-separator</code> accepts, case-insensitively:</p>
+<pre><code class="language-text">slash
+backslash
+default
+system
+</code></pre>
+<p>Default: <code>slash</code>.</p>
+<p>Mode-dependent meaning:</p>
+<ul>
+<li><code>generate</code>: controls separator style written into generated relative entry paths.
+</li>
+<li><code>check</code>, <code>join</code>, <code>split</code>: controls interpretation of path text read from manifests.
+</li>
+<li><code>derive</code>: controls reference path interpretation and the representation of newly created target entries. The default <code>slash</code> mode treats both slash characters as separator markers and writes <code>/</code>.
+</li>
+<li><code>format</code>: <code>default</code> preserves existing separator characters. <code>slash</code>, <code>backslash</code>, and <code>system</code> are textual normalization modes that treat both <code>/</code> and <code>\</code> as separator markers and rewrite them to the requested/native style.
+</li>
+</ul>
+<p>On systems where a literal backslash is legal inside a filename, forced separator normalization is inherently ambiguous. Use <code>default</code> when existing separator characters must be preserved literally.</p>
+<h2 id="absolute-paths">Absolute paths</h2>
+<p>Absolute manifest entry paths are accepted by <code>check</code>, <code>derive</code>, <code>format</code>, and <code>join</code>.</p>
+<p><code>split</code> accepts an absolute entry only with <code>-o</code>, where it is re-rooted safely below the output directory. Without <code>-o</code>, absolute and escaping parent-relative entries are rejected.</p>
+<p>The mode input <code>PATH</code> itself may be absolute.</p>
+<p>Generated <code>generate</code> records are normally relative to their manifest location.</p>
+<h2 id="filename-encoding">Filename encoding</h2>
+<p>On POSIX, path handling is byte-oriented so filenames containing bytes that are not valid UTF-8 can still be scanned, hashed, represented, and round-tripped where the manifest format permits.</p>
+<p>On Windows, command-line and filesystem operations use wide Win32 paths internally and convert UTF-16 to/from UTF-8 for the program&#39;s internal textual representation.</p>
+<p>The portable hash/generate filter operates on filename bytes. <code>?</code> matches one filesystem byte, not one Unicode code point. Literal non-ASCII filter text is matched using its encoded bytes; Unicode case folding is not performed.</p>
+<h2 id="memory-safety">Memory safety</h2>
+<p>Memory management is centralized and defensive. Dynamic buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap <code>size_t</code> before allocation, and owned heap resources have explicit cleanup paths.</p>
+<h2 id="signals-and-cleanup">Signals and cleanup</h2>
+<p><code>SIGINT</code> and <code>SIGTERM</code> request cooperative cancellation. Hashing/writing loops observe the signal state, temporary files and reserved collision paths are cleaned, and the process exits with <code>128 + signal</code> when interruption is observed. Normal <code>Operation complete.</code> summaries are suppressed after interruption, and no cancellation or interruption message is printed.</p>
+<p>A partially written <code>check</code> report or manifest temporary file is not intentionally left as a committed output. Outputs that were already committed before a later signal are not rolled back.</p>
+<h2 id="exit-status">Exit status</h2>
+<p>Typical statuses:</p>
+<ul>
+<li><code>0</code>: success, including cancellation at a confirmation prompt before destructive/rewrite work begins.
+</li>
+<li><code>1</code>: verification mismatch/unreadable/error, manifest/data processing failure, or an operational failure after valid command-line parsing.
+</li>
+<li><code>2</code>: command-line usage, initial path validation, or output preflight/configuration error.
+</li>
+<li><code>127</code>: no usable native provider can be selected for an algorithm that actually requires hashing.
+</li>
+<li><code>128 + signal</code>: interrupted by <code>SIGINT</code> or <code>SIGTERM</code>.
+</li>
+</ul>
+<p>For <code>derive</code>, status <code>1</code> also covers missing occurrence coverage in an existing target, unreadable/unhashable source data during target creation, and ambiguous target case variants. Timestamp-preservation warnings alone do not change the exit status.</p>
+<p>If every corresponding <code>derive</code> target already exists, no hashing provider is required.</p>
+<h2 id="examples">Examples</h2>
+<p>Verify SHA-256 manifests:</p>
+<pre><code class="language-sh">checksum-manifest check sha256 /data/releases
+</code></pre>
+<p>Verify all supported manifest algorithms recursively:</p>
+<pre><code class="language-sh">checksum-manifest check all -r .
+</code></pre>
+<p>Verify several explicit manifests:</p>
+<pre><code class="language-sh">checksum-manifest check sha256 /data/a.sha256 /data/b.sha256
+</code></pre>
+<p>Write a verification report:</p>
+<pre><code class="language-sh">checksum-manifest check sha256 -r -o /tmp/check-report.txt /data/releases
+</code></pre>
+<p>Generate MD5 and SHA-256 manifests recursively:</p>
+<pre><code class="language-sh">checksum-manifest generate md5,sha256 -r /data/releases
+</code></pre>
+<p>Generate SHA-256 manifests only for ISO files, case-insensitively:</p>
+<pre><code class="language-sh">checksum-manifest generate sha256 -r -f '*.iso' -C insensitive /data/releases
+</code></pre>
+<p>Generate one naturally ordered combined SHA-256 manifest:</p>
+<pre><code class="language-sh">checksum-manifest generate sha256 -r -l single -N -o /tmp/checksums.sha256 /data/releases
+</code></pre>
+<p>Use the <code> *</code> delimiter and CRLF output:</p>
+<pre><code class="language-sh">checksum-manifest generate sha256 -d ' *' -n windows /data/releases
+</code></pre>
+<p>Pin native providers:</p>
+<pre><code class="language-sh">checksum-manifest generate md5,sha256 -t 'md5:librhash,sha256:openssl' /data/releases
+</code></pre>
+<p>Derive missing SHA-256/SHA-512 targets from MD5/SHA-1 references:</p>
+<pre><code class="language-sh">checksum-manifest derive sha256,sha512 -F md5,sha1 -r /data/releases
+</code></pre>
+<p>Format manifests with backups:</p>
+<pre><code class="language-sh">checksum-manifest format sha256 -r -d ' *' -n windows -s slash -b /data/releases
+</code></pre>
+<p>Join SHA-256 manifests recursively:</p>
+<pre><code class="language-sh">checksum-manifest join sha256 -r -L -o /tmp/joined.sha256 /data/releases
+</code></pre>
+<p>Join a custom <code>.shake256</code> manifest extension:</p>
+<pre><code class="language-sh">checksum-manifest join shake256 -r -o /tmp/manifests /data/releases
+</code></pre>
+<p>Split one combined manifest:</p>
+<pre><code class="language-sh">checksum-manifest split sha256 -o /tmp/split /tmp/joined.sha256
+</code></pre>
+<p>Remove SHA-256 manifests recursively after the three confirmations:</p>
+<pre><code class="language-sh">checksum-manifest remove sha256 -r /data/releases
+</code></pre>
+<p>Pass a positional pathname beginning with <code>-</code>:</p>
+<pre><code class="language-sh">checksum-manifest check sha256 -- -checksums.sha256
+</code></pre>
+<h2 id="license">License</h2>
+<p>This project is licensed under the MIT License.</p>
+</body>
+</html>

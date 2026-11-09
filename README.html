@@ -313,7 +313,7 @@
 </head>
 <body>
 <h1 id="checksum-manifest-utility-c">Checksum Manifest Utility — C</h1>
-<p><code>checksum-manifest</code> is a standalone C99 command-line utility for hashing files directly and for generating, verifying, deriving, reformatting, joining, splitting, and removing checksum manifests.</p>
+<p><code>checksum-manifest</code> is a standalone C99 command-line utility for hashing files directly and for generating, verifying, deriving, reformatting, inspecting, joining, splitting, and removing checksum manifests.</p>
 <p>All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRHash. The program does not invoke external checksum executables.</p>
 <h2 id="contents">Contents</h2>
 <ul>
@@ -342,6 +342,8 @@
 <li><a href="#derive">derive</a>
 </li>
 <li><a href="#format">format</a>
+</li>
+<li><a href="#inspect">inspect</a>
 </li>
 <li><a href="#join">join</a>
 </li>
@@ -376,6 +378,8 @@
 <li><a href="#derive-output">derive output</a>
 </li>
 <li><a href="#format-behavior">format behavior</a>
+</li>
+<li><a href="#inspect-output">inspect output</a>
 </li>
 <li><a href="#join-output">join output</a>
 </li>
@@ -555,6 +559,8 @@ checksum-manifest derive ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
 checksum-manifest d ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
 checksum-manifest format ALGORITHMS [OPTIONS] PATH
 checksum-manifest f ALGORITHMS [OPTIONS] PATH
+checksum-manifest inspect ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
+checksum-manifest i ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
 checksum-manifest join ALGORITHMS [OPTIONS] PATH
 checksum-manifest j ALGORITHMS [OPTIONS] PATH
 checksum-manifest split ALGORITHM [OPTIONS] CHECKSUM_FILE
@@ -563,13 +569,14 @@ checksum-manifest remove ALGORITHMS [OPTIONS] PATH
 checksum-manifest r ALGORITHMS [OPTIONS] PATH
 checksum-manifest (-h | --help | -v | --version)
 </code></pre>
-<p>The first argument is the mode. <code>c</code>, <code>h</code>, <code>g</code>, <code>d</code>, <code>f</code>, <code>j</code>, <code>s</code>, and <code>r</code> are aliases for <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, <code>split</code>, and <code>remove</code>.</p>
+<p>The first argument is the mode. <code>c</code>, <code>h</code>, <code>g</code>, <code>d</code>, <code>f</code>, <code>i</code>, <code>j</code>, <code>s</code>, and <code>r</code> are aliases for <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>inspect</code>, <code>join</code>, <code>split</code>, and <code>remove</code>.</p>
 <p>Long options that take a value accept both <code>--option VALUE</code> and <code>--option=VALUE</code>. Use <code>--</code> to end option parsing before a positional path that begins with <code>-</code>.</p>
 <pre><code class="language-text">-r, --recursive
 -o, --output PATH
 -F, --from ALGORITHMS
 -d, --delimiter VALUE
 -n, --newline MODE
+-m, --match MODE             inspect only: all|single|multiple|empty
 -s, --path-separator MODE
 -t, --tools SPEC
 -f, --filter PATTERN
@@ -585,13 +592,17 @@ checksum-manifest (-h | --help | -v | --version)
 </code></pre>
 <p>Option applicability:</p>
 <ul>
-<li><code>--recursive</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, <code>remove</code>; invalid with <code>split</code>.
+<li><code>--recursive</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>format</code>, <code>inspect</code>, <code>join</code>, <code>remove</code>; invalid with <code>split</code>.
 </li>
-<li><code>--output</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>join</code>, <code>split</code>; invalid with <code>format</code> and <code>remove</code>.
+<li><code>--output</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>inspect</code>, <code>join</code>, <code>split</code>; invalid with <code>format</code> and <code>remove</code>.
 </li>
 <li><code>--from</code>: required by <code>derive</code>; invalid in every other mode.
 </li>
-<li><code>--delimiter</code>, <code>--newline</code>, <code>--path-separator</code>: every mode except <code>remove</code>.
+<li><code>--newline</code>: every mode except <code>remove</code>; for <code>inspect</code> it controls the report newline.
+</li>
+<li><code>--delimiter</code>, <code>--path-separator</code>: invalid with <code>inspect</code> and <code>remove</code>; other modes retain their existing behavior.
+</li>
+<li><code>--match</code>: <code>inspect</code> only; values are <code>all</code>, <code>single</code>, <code>multiple</code>, or <code>empty</code> (default <code>all</code>).
 </li>
 <li><code>--tools</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code> only.
 </li>
@@ -601,7 +612,7 @@ checksum-manifest (-h | --help | -v | --version)
 </li>
 <li><code>--layout</code>: <code>generate</code> only.
 </li>
-<li><code>--natural-sort</code>, <code>--lexicographic-sort</code>: <code>hash</code>, <code>generate</code>, <code>join</code>, <code>derive</code>; for <code>generate</code>, <code>--layout single</code> is required. The two sort options are mutually exclusive.
+<li><code>--natural-sort</code>, <code>--lexicographic-sort</code>: <code>hash</code>, <code>generate</code>, <code>derive</code>, <code>inspect</code>, <code>join</code>; for <code>generate</code>, <code>--layout single</code> is required. In <code>inspect</code>, ordering is applied inside each directory during traversal, not globally. The two sort options are mutually exclusive.
 </li>
 <li><code>--update-timestamp</code>: <code>derive</code>, <code>format</code>, <code>remove</code> only.
 </li>
@@ -615,7 +626,7 @@ checksum-manifest (-h | --help | -v | --version)
 checksum-manifest check md5 /data/set1.md5 /data/set2.md5
 checksum-manifest c md5,sha256 -r /data
 </code></pre>
-<p><code>check</code> accepts one directory, one explicit manifest file, or multiple explicit manifest files. When exactly one algorithm is selected, every explicit file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or <code>all</code>, every explicit file must have a case-insensitive filename extension matching one of the selected algorithms so the algorithm can be determined unambiguously. Directory discovery always remains extension-based. When multiple inputs are supplied, every input must be a regular file; mixed file/directory input and multiple directories are rejected. Duplicate explicit file paths resolve to one verification pass. <code>--recursive</code> applies when the single input is a directory.</p>
+<p><code>check</code> accepts one directory, one explicit manifest file, or multiple explicit manifest files. When exactly one algorithm is selected, every explicit file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or <code>all</code>, every explicit file must have a case-insensitive filename extension matching one of the selected algorithms so the algorithm can be determined unambiguously. Directory discovery always remains extension-based. When multiple inputs are supplied, every input must be a regular file; mixed file/directory input and multiple directories are rejected. Duplicate explicit file paths resolve to one verification pass. <code>inspect</code> uses the same explicit-file and directory-discovery rules, but it only parses the selected manifests and never follows their Entry paths. <code>--recursive</code> applies when the single input is a directory.</p>
 <p>For each selected algorithm that has at least one discovered manifest, one native provider is selected before verification starts and is used for the whole run. A provider failure during hashing is reported as <code>ERROR</code>; provider selection is not changed mid-run.</p>
 <h3 id="hash">hash</h3>
 <p><code>hash</code> calculates digests and writes hash output directly to stdout. Alias: <code>h</code>. It accepts the same built-in algorithm selectors as <code>generate</code>, including <code>all</code> and the <code>sfv</code> alias for <code>crc32</code>.</p>
@@ -633,7 +644,7 @@ checksum-manifest hash sha256 -r -o hashes.txt /data
 [sha256]  def...
 </code></pre>
 <p>Digest-only output remains file-major and follows selector order. <code>--delimiter</code> and <code>--path-separator</code> are accepted but do not affect digest-only output. Without <code>--digest-only</code>, output paths are relative to the input root: a file input uses its basename, while directory input preserves paths below that directory. <code>--path-separator</code> controls rendering.</p>
-<p><code>hash</code> prints no <code>Tools:</code>, <code>Entries:</code>, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. <code>-o/--output</code> writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different <code>-o</code> pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or <code>-o</code> output ends with a newline. Early downstream pipe closure is treated as normal successful termination.</p>
+<p><code>hash</code> prints no <code>Tools</code>, <code>Entries</code>, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. <code>-o/--output</code> writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different <code>-o</code> pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or <code>-o</code> output ends with a newline. Early downstream pipe closure is treated as normal successful termination.</p>
 <p>The supported options are <code>-r/--recursive</code>, <code>-o/--output</code>, <code>-d/--delimiter</code>, <code>-n/--newline</code>, <code>-s/--path-separator</code>, <code>-t/--tools</code>, <code>-f/--filter</code>, <code>-C/--filter-case</code>, <code>-D/--digest-only</code>, <code>-N/--natural-sort</code>, and <code>-L/--lexicographic-sort</code>. Their defaults match <code>generate</code> where applicable: filter <code>*</code>, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.</p>
 <p>If one file or one algorithm fails to hash, the error is written to stderr, remaining work continues, successful records are retained, and the final status is nonzero.</p>
 <h3 id="generate">generate</h3>
@@ -679,6 +690,14 @@ checksum-manifest d sha256 -F md5 -r -N -o /tmp/derived /data/releases
 <p>Recognized entry formatting may change according to delimiter, newline, and path-separator options. Digest text and non-entry lines are preserved. A manifest containing NUL is refused. Symbolic-link manifest paths are not rewritten.</p>
 <p>With <code>-b/--backup</code>, a collision-safe <code>.cmbak</code> backup is created before the manifest is rewritten. Backup creation failure prevents that manifest from being rewritten. A backup is still created when the resulting formatted content is unchanged.</p>
 <p>Without <code>-T</code>, manifest, backup, and scanned-directory modification times are preserved best-effort. <code>-T</code> leaves timestamp changes to normal filesystem behavior.</p>
+<h3 id="inspect">inspect</h3>
+<p><code>inspect</code> reports how many recognized checksum Entries each selected manifest contains. It uses the same explicit-file and directory-discovery rules as <code>check</code>, but it does not read or hash the files named by Entries.</p>
+<pre><code class="language-bash">checksum-manifest inspect sha256 /data/releases/checksums.sha256
+checksum-manifest i all -r -m multiple -o /tmp/inspect-report.txt /data/releases
+</code></pre>
+<p>Selectors follow the transform-style rules used by <code>format</code>, <code>join</code>, <code>remove</code>, and <code>split</code>: built-in names, <code>sfv</code> as the CRC32 alias, custom extension names, and standalone <code>all</code> are accepted.</p>
+<p>Each selected manifest is classified as <code>SINGLE</code>, <code>MULTIPLE</code>, <code>EMPTY</code>, or <code>UNREAD</code>. <code>-m/--match</code> accepts <code>all</code>, <code>single</code>, <code>multiple</code>, or <code>empty</code> and filters only per-manifest status lines; <code>Entries</code> and <code>Summary</code> always describe the complete inspection. <code>-N</code> and <code>-L</code> sort discovery inside each directory during depth-first traversal. Displayed and report paths always use slash separators.</p>
+<p><code>inspect</code> accepts <code>--recursive</code>, <code>--output</code>, <code>--newline</code>, <code>--match</code>, <code>--natural-sort</code>, and <code>--lexicographic-sort</code>.</p>
 <h3 id="join">join</h3>
 <p><code>join</code> combines valid entries from selected manifests into one output per algorithm.</p>
 <pre><code class="language-sh">checksum-manifest join sha256 -r /data
@@ -706,11 +725,11 @@ keccak-224, keccak-256, keccak-384, keccak-512,
 sha3-224, sha3-256, sha3-384, sha3-512
 </code></pre>
 <p><code>check</code>, <code>hash</code>, <code>generate</code>, and the target selector of <code>derive</code> require built-in hashing algorithms.</p>
-<p><code>format</code>, <code>join</code>, <code>split</code>, <code>remove</code>, and <code>derive -F/--from</code> also accept explicit custom algorithm/extension names matching:</p>
+<p><code>format</code>, <code>inspect</code>, <code>join</code>, <code>split</code>, <code>remove</code>, and <code>derive -F/--from</code> also accept explicit custom algorithm/extension names matching:</p>
 <pre><code class="language-text">[A-Za-z0-9][A-Za-z0-9._+-]*
 </code></pre>
 <p>Matching is case-insensitive using ASCII folding.</p>
-<p><code>all</code> is a standalone case-insensitive keyword and cannot be combined with other comma-separated names. For built-in target selection it expands to the full built-in list. For transform/reference selectors it expands to the same built-in extension list; it does not discover arbitrary unknown extensions. <code>split</code> requires exactly one selector and rejects <code>all</code>.</p>
+<p><code>all</code> is a standalone case-insensitive keyword and cannot be combined with other comma-separated names. For built-in target selection it expands to the full built-in list. For inspect/transform/reference selectors it expands to the same built-in extension list; it does not discover arbitrary unknown extensions. <code>split</code> requires exactly one selector and rejects <code>all</code>.</p>
 <p><code>sfv</code> is a reserved case-insensitive alias for <code>crc32</code>. CRC32 uses <code>.sfv</code>; CRC32C uses <code>.crc32c</code>; every other built-in algorithm uses <code>.&lt;algorithm&gt;</code>.</p>
 <p>Duplicate selector names are ignored after normalization.</p>
 <h2 id="manifest-discovery">Manifest discovery</h2>
@@ -751,7 +770,7 @@ backup-?.tar
 <p>In case-insensitive mode, ASCII letters are folded. <code>[[:upper:]]</code> and <code>[[:lower:]]</code> both behave like ASCII <code>[[:alpha:]]</code>. Non-ASCII case equivalents are not folded.</p>
 <p>Generated manifests and <code>hash -o</code> output files are ordinary files on later scans. If an old output is inside the scanned tree and matches the active filter, it can become a source file on a later <code>hash</code> or <code>generate</code> run.</p>
 <h2 id="entry-grammar">Entry grammar</h2>
-<p><code>check</code>, <code>derive</code>, <code>format</code>, <code>join</code>, and <code>split</code> share the same parser.</p>
+<p><code>check</code>, <code>derive</code>, <code>format</code>, <code>inspect</code>, <code>join</code>, and <code>split</code> share the same parser.</p>
 <p>For non-CRC algorithms the recognized form is conceptually:</p>
 <pre><code class="language-regex">^([A-Fa-f0-9]+)(  | \*|\t\*| |\t)(.+)$
 </code></pre>
@@ -768,7 +787,7 @@ backup-?.tar
 </code></pre>
 <p>Because whitespace is the field separator, a CRC filename ending in a space or tab is inherently ambiguous.</p>
 <p>Digest characters must be hexadecimal, but digest length is intentionally not validated by the parser.</p>
-<p>Blank lines and unescaped lines beginning with <code>#</code> or <code>;</code> are ignored. <code>check</code>, <code>derive</code>, <code>join</code>, and <code>split</code> skip unrecognized lines and NUL-containing lines. <code>format</code> refuses to rewrite a manifest containing NUL but preserves other non-entry text.</p>
+<p>Blank lines and unescaped lines beginning with <code>#</code> or <code>;</code> are ignored. <code>check</code>, <code>derive</code>, <code>inspect</code>, <code>join</code>, and <code>split</code> skip unrecognized lines and NUL-containing lines. <code>format</code> refuses to rewrite a manifest containing NUL but preserves other non-entry text.</p>
 <p>Escaped records decode these filename sequences:</p>
 <pre><code class="language-text">\\   literal backslash
 \n   LF
@@ -800,8 +819,8 @@ backup-?.tar
 <li><code>ERROR</code>: another verification/hash/provider error occurred.
 </li>
 </ul>
-<p>Each checked-file result ends with the normalized lowercase algorithm in brackets. <code>Entries:</code> counts parsed entries by algorithm, including failed checks; manifest-level errors are not entry counts.</p>
-<p><code>Tools:</code> reports the native provider selected for each algorithm that actually required hashing.</p>
+<p>Each checked-file result ends with the normalized lowercase algorithm in brackets. <code>Entries</code> counts parsed entries by algorithm, including failed checks; manifest-level errors are not entry counts.</p>
+<p><code>Tools</code> reports the native provider selected for each algorithm that actually required hashing.</p>
 <h2 id="native-hash-providers">Native hash providers</h2>
 <p>Hashing is always in-process. No external executable is launched.</p>
 <p>Automatic provider preference is:</p>
@@ -824,20 +843,20 @@ rhash
 </code></pre>
 <p><code>gcrypt</code> normalizes to <code>libgcrypt</code>; <code>rhash</code> normalizes to <code>librhash</code>. <code>sfv</code> may be used where <code>crc32</code> is selected and normalizes to CRC32.</p>
 <p>A pinned algorithm does not fall back. Unlisted algorithms use automatic provider selection. A pin that is structurally impossible according to the central algorithm registry is rejected during command-line validation.</p>
-<p><code>format</code>, <code>join</code>, <code>split</code>, and <code>remove</code> do not hash file contents and do not require runtime provider selection. <code>derive</code> requires providers only for target manifests that are missing and must actually be created.</p>
+<p><code>format</code>, <code>inspect</code>, <code>join</code>, <code>split</code>, and <code>remove</code> do not hash file contents and do not require runtime provider selection. <code>inspect</code> reads only selected manifest files and never resolves their entry targets. <code>derive</code> requires providers only for target manifests that are missing and must actually be created.</p>
 <h2 id="output-behavior">Output behavior</h2>
-<p>On POSIX, files newly created by <code>check -o</code>, <code>hash -o</code>, <code>generate</code>, <code>derive</code>, <code>join</code>, and <code>split</code> are normalized to mode <code>0644</code>. Hash output redirected by the shell to a regular stdout file (for example <code>&gt; hashes.txt</code>) is also normalized to mode <code>0644</code>; pipes are not chmodded. <code>format</code> preserves existing manifest permission bits and <code>.cmbak</code> backups preserve source permissions. Other metadata such as inode identity, ownership, ACLs, extended attributes, security labels, capabilities, and hard-link topology is not guaranteed when a manifest is atomically replaced.</p>
+<p>On POSIX, files newly created by <code>check -o</code>, <code>hash -o</code>, <code>generate</code>, <code>derive</code>, <code>inspect -o</code>, <code>join</code>, and <code>split</code> are normalized to mode <code>0644</code>. Hash output redirected by the shell to a regular stdout file (for example <code>&gt; hashes.txt</code>) is also normalized to mode <code>0644</code>; pipes are not chmodded. <code>format</code> preserves existing manifest permission bits and <code>.cmbak</code> backups preserve source permissions. Other metadata such as inode identity, ownership, ACLs, extended attributes, security labels, capabilities, and hard-link topology is not guaranteed when a manifest is atomically replaced.</p>
 <h3 id="check-output">check output</h3>
 <pre><code class="language-sh">checksum-manifest check sha256 -o report.txt /data
 </code></pre>
-<p>The report contains verification lines, <code>Tools:</code>, per-algorithm <code>Entries:</code>, and <code>Summary:</code>. The terminal reports the actual collision-safe report path.</p>
+<p>The report contains verification lines, <code>Tools</code>, per-algorithm <code>Entries</code>, and <code>Summary</code>. The terminal reports the actual collision-safe report path.</p>
 <p>With multiple explicit manifest inputs, displayed target paths are based on the current working directory; file resolution itself remains relative to each individual manifest directory.</p>
 <h3 id="hash-output">hash output</h3>
 <p>Without <code>-o</code>, <code>hash</code> writes records to stdout and nothing else. Shell redirection such as <code>checksum-manifest hash sha256 PATH &gt; hashes.txt</code> therefore captures the same bytes that <code>-o hashes.txt</code> would write when no collision changes the <code>-o</code> pathname.</p>
 <p>With one algorithm the stream is standard manifest grammar. With multiple algorithms each line starts with an aligned <code>[algorithm]</code> tag, and records are ordered file-major with algorithms in selector order. Paths are relative to the input root, not to the current directory or the <code>-o</code> file location. If stdout is redirected to a regular file inside a scanned directory input, that stdout file is excluded from hash input discovery so it does not hash itself. Do not redirect stdout directly onto the input file itself: the shell truncates that file before the utility starts, and <code>hash</code> rejects the detected overlap.</p>
 <p><code>-o/--output</code> preserves an existing destination and selects a report-style collision-safe pathname such as <code>hashes-A1B2C3D4.txt</code>. When a collision selects an alternate pathname, that actual path is reported on stderr. Shell <code>&gt;</code> redirection is controlled by the shell and therefore does not use the utility&#39;s collision-safe naming.</p>
 <h3 id="generate-output">generate output</h3>
-<p><code>Entries:</code> lists per-algorithm counts and a total.</p>
+<p><code>Entries</code> lists per-algorithm counts and a total.</p>
 <p>With default <code>separate</code> layout and no <code>-o</code>, one manifest is created beside each source file for each selected algorithm. A collision preserves the existing file and adds an eight-character hexadecimal suffix before the checksum extension:</p>
 <pre><code class="language-text">archive.zip.md5
 archive.zip-A1B2C3D4.md5
@@ -861,6 +880,8 @@ checksums.sfv
 <p><code>format</code> rewrites at the original pathname. When content changes, a temporary file in the same directory is written and atomically replaces the old pathname. Permission bits are preserved. The original inode and non-permission metadata are not guaranteed to survive replacement.</p>
 <p>Without <code>-T</code>, modification times of manifests, backups, and scanned directories are preserved best-effort. Preservation failures are aggregated as warnings rather than stopping formatting.</p>
 <p>With <code>-b</code>, <code>.cmbak</code> is created before rewrite. Collision-safe naming preserves an existing backup.</p>
+<h3 id="inspect-output">inspect output</h3>
+<p>Per-manifest lines use the <code>SINGLE</code>, <code>MULTIPLE</code>, <code>EMPTY</code>, and <code>UNREAD</code> labels. <code>Entries</code> reports recognized Entries by selected extension/algorithm plus <code>Total</code>, and <code>Summary</code> reports <code>Manifests</code>, <code>Entries</code>, <code>Single</code>, <code>Multiple</code>, <code>Empty</code>, <code>Unread</code>, and <code>Errors</code>. Both sections always cover the complete inspection, regardless of <code>--match</code>.</p>
 <h3 id="join-output">join output</h3>
 <p>Without <code>-o</code>, joined outputs are placed in <code>PATH</code> when it is a directory, or beside <code>PATH</code> when <code>PATH</code> is a manifest file.</p>
 <p>Default names are:</p>
@@ -878,7 +899,7 @@ checksums.crc32c
 <h3 id="remove-behavior">remove behavior</h3>
 <p><code>remove</code> creates no output files. After final confirmation, each selected manifest is unlinked independently. Errors do not stop later deletions. Without <code>-T</code>, affected parent directory mtimes are restored best-effort.</p>
 <h3 id="collision-handling">Collision handling</h3>
-<p>Existing output files are never silently overwritten by <code>check -o</code>, <code>generate</code>, <code>join</code>, or <code>split</code>.</p>
+<p>Existing output files are never silently overwritten by <code>check -o</code>, <code>hash -o</code>, <code>generate</code>, <code>inspect -o</code>, <code>join</code>, or <code>split</code>.</p>
 <p>Report example:</p>
 <pre><code class="language-text">report.txt -&gt; report-A1B2C3D4.txt
 </code></pre>
@@ -919,7 +940,7 @@ checksum-92AF01CC.sfv
 </tr>
 </tbody></table>
 <p>Default: <code>unix</code> / LF.</p>
-<p>Input manifests can contain LF, CRLF, or CR. The option controls newly written reports/manifests and <code>format</code> output.</p>
+<p>Input manifests can contain LF, CRLF, or CR. The option controls newly written reports/manifests, including <code>check</code> reports, <code>format</code> output, and <code>inspect</code> reports.</p>
 <h2 id="path-separators">Path separators</h2>
 <p><code>-s/--path-separator</code> accepts, case-insensitively:</p>
 <pre><code class="language-text">slash
@@ -928,6 +949,7 @@ default
 system
 </code></pre>
 <p>Default: <code>slash</code>.</p>
+<p><code>inspect</code> does not accept <code>--path-separator</code>. Its displayed/report manifest paths always use <code>/</code>, while entry filenames are parsed only to determine whether a record is a recognized Entry and are never resolved as filesystem paths.</p>
 <p>Mode-dependent meaning:</p>
 <ul>
 <li><code>generate</code>: controls separator style written into generated relative entry paths.
@@ -941,13 +963,13 @@ system
 </ul>
 <p>On systems where a literal backslash is legal inside a filename, forced separator normalization is inherently ambiguous. Use <code>default</code> when existing separator characters must be preserved literally.</p>
 <h2 id="absolute-paths">Absolute paths</h2>
-<p>Absolute manifest entry paths are accepted by <code>check</code>, <code>derive</code>, <code>format</code>, and <code>join</code>.</p>
+<p>Absolute manifest entry paths are accepted by <code>check</code>, <code>derive</code>, <code>format</code>, and <code>join</code>. <code>inspect</code> does not interpret manifest entry paths; relative and absolute filenames count equally when their records are recognized by the parser.</p>
 <p><code>split</code> accepts an absolute entry only with <code>-o</code>, where it is re-rooted safely below the output directory. Without <code>-o</code>, absolute and escaping parent-relative entries are rejected.</p>
 <p>The mode input <code>PATH</code> itself may be absolute.</p>
 <p>Generated <code>generate</code> records are normally relative to their manifest location.</p>
 <h2 id="filename-encoding">Filename encoding</h2>
 <p>On POSIX, path handling is byte-oriented so filenames containing bytes that are not valid UTF-8 can still be scanned, hashed, represented, and round-tripped where the manifest format permits.</p>
-<p>On Windows, command-line and filesystem operations use wide Win32 paths internally and convert UTF-16 to/from UTF-8 for the program&#39;s internal textual representation.</p>
+<p>On Windows, long filesystem paths beyond the legacy <code>MAX_PATH</code> limit are supported.</p>
 <p>The portable hash/generate filter operates on filename bytes. <code>?</code> matches one filesystem byte, not one Unicode code point. Literal non-ASCII filter text is matched using its encoded bytes; Unicode case folding is not performed.</p>
 <h2 id="memory-safety">Memory safety</h2>
 <p>Memory management is centralized and defensive. Dynamic buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap <code>size_t</code> before allocation, and owned heap resources have explicit cleanup paths.</p>
@@ -969,6 +991,7 @@ system
 </li>
 </ul>
 <p>For <code>derive</code>, status <code>1</code> also covers missing occurrence coverage in an existing target, unreadable/unhashable source data during target creation, and ambiguous target case variants. Timestamp-preservation warnings alone do not change the exit status.</p>
+<p>For <code>inspect</code>, <code>SINGLE</code>, <code>MULTIPLE</code>, and <code>EMPTY</code> are successful classifications. An unread selected manifest, scan error, or report-write failure returns status <code>1</code>; <code>--match</code> never changes the inspection result or exit status.</p>
 <p>If every corresponding <code>derive</code> target already exists, no hashing provider is required.</p>
 <h2 id="examples">Examples</h2>
 <p>Verify SHA-256 manifests:</p>
@@ -1003,6 +1026,9 @@ system
 </code></pre>
 <p>Format manifests with backups:</p>
 <pre><code class="language-sh">checksum-manifest format sha256 -r -d ' *' -n windows -s slash -b /data/releases
+</code></pre>
+<p>Inspect multi-entry manifests recursively while retaining full Entries/Summary totals:</p>
+<pre><code class="language-sh">checksum-manifest inspect all -r -m multiple -o /tmp/inspect-report.txt /data/releases
 </code></pre>
 <p>Join SHA-256 manifests recursively:</p>
 <pre><code class="language-sh">checksum-manifest join sha256 -r -L -o /tmp/joined.sha256 /data/releases

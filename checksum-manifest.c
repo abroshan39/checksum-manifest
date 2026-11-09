@@ -1,4 +1,7 @@
 #ifndef _WIN32
+#if defined(__linux__)
+#define _GNU_SOURCE
+#endif
 #define _XOPEN_SOURCE 700
 #endif
 #define _POSIX_C_SOURCE 200809L
@@ -8,16 +11,18 @@
 #endif
 
 /*
- * checksum-manifest is a standalone C99 command-line utility for hashing files directly and
- * generating, verifying, deriving, reformatting, joining, splitting, and removing checksum manifests.
+ * checksum-manifest is a standalone C99 command-line utility for hashing files directly and for generating,
+ * verifying, deriving, reformatting, inspecting, joining, splitting, and removing checksum manifests.
  *
- * Hashing is performed in-process through OpenSSL, Libgcrypt, and LibRHash.
- * No external checksum executable is invoked.
+ * All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRHash.
+ * The program does not invoke external checksum executables.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
+#include <wctype.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <ctype.h>
@@ -69,6 +74,7 @@
 #define CM_SEP '\\'
 #define CM_ALT_SEP '/'
 #define CM_PATH_MAX 32768
+#define CM_WINDOWS_EXTENDED_PATH_THRESHOLD 248U
 #define cm_strcasecmp _stricmp
 #else
 #include <unistd.h>
@@ -91,7 +97,7 @@
 #define O_BINARY 0
 #endif
 
-#define CM_VERSION "1.1.0"
+#define CM_VERSION "1.2.0"
 #define CM_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 #define CM_HASH_CHUNK (64U * 1024U)
 #define CM_PROGRESS_INTERVAL_MS 100ULL
@@ -262,6 +268,7 @@ typedef struct
     char *filter_pattern;
     char *filter_case;
     char *layout;
+    char *match_mode;
     char *tools_raw;
     CmProviderOverrideVec tools;
     int recursive;
@@ -275,6 +282,7 @@ typedef struct
     int layout_explicit;
     int newline_explicit;
     int path_separator_explicit;
+    int match_explicit;
 } CmOptions;
 
 typedef struct
@@ -911,6 +919,480 @@ static char *cm_wide_to_utf8(const wchar_t *w)
     return s;
 }
 
+static void cm_set_errno_from_win32(DWORD error);
+
+static wchar_t *cm_wcsdup(const wchar_t *text)
+{
+    size_t length = wcslen(text);
+    wchar_t *copy = (wchar_t *)cm_xmalloc_array(cm_size_add(length, 1U), sizeof(wchar_t));
+
+    memcpy(copy, text, cm_size_add(length, 1U) * sizeof(wchar_t));
+    return copy;
+}
+
+static int cm_windows_is_namespace_path(const wchar_t *path)
+{
+    size_t length;
+
+    if(!path)
+        return 0;
+    length = wcslen(path);
+    if(length < 4)
+        return 0;
+
+    return (path[0] == L'\\' || path[0] == L'/') && (path[1] == L'\\' || path[1] == L'/') &&
+        (path[2] == L'?' || path[2] == L'.') && (path[3] == L'\\' || path[3] == L'/');
+}
+
+static void cm_windows_normalize_separators_wide(wchar_t *path)
+{
+    wchar_t *cursor;
+
+    for(cursor = path; cursor && *cursor; cursor++)
+        if(*cursor == L'/')
+            *cursor = L'\\';
+}
+
+static wchar_t *cm_windows_get_current_directory_wide()
+{
+    wchar_t *buffer;
+    DWORD needed, written;
+
+    needed = GetCurrentDirectoryW(0, NULL);
+    if(!needed)
+    {
+        cm_set_errno_from_win32(GetLastError());
+        return NULL;
+    }
+    buffer = (wchar_t *)cm_xmalloc_array((size_t)needed, sizeof(wchar_t));
+    written = GetCurrentDirectoryW(needed, buffer);
+    if(!written || written >= needed)
+    {
+        DWORD error = GetLastError();
+
+        free(buffer);
+        if(written >= needed)
+            errno = ENAMETOOLONG;
+        else
+            cm_set_errno_from_win32(error);
+        return NULL;
+    }
+    cm_windows_normalize_separators_wide(buffer);
+
+    return buffer;
+}
+
+static wchar_t *cm_windows_get_short_full_path_wide(const wchar_t *path)
+{
+    wchar_t *buffer;
+    DWORD needed, written;
+
+    needed = GetFullPathNameW(path, 0, NULL, NULL);
+    if(!needed)
+    {
+        cm_set_errno_from_win32(GetLastError());
+        return NULL;
+    }
+    buffer = (wchar_t *)cm_xmalloc_array((size_t)needed, sizeof(wchar_t));
+    written = GetFullPathNameW(path, needed, buffer, NULL);
+    if(!written || written >= needed)
+    {
+        DWORD error = GetLastError();
+
+        free(buffer);
+        if(written >= needed)
+            errno = ENAMETOOLONG;
+        else
+            cm_set_errno_from_win32(error);
+        return NULL;
+    }
+    cm_windows_normalize_separators_wide(buffer);
+
+    return buffer;
+}
+
+static wchar_t *cm_windows_join_wide_paths(const wchar_t *base, const wchar_t *tail)
+{
+    size_t base_length = wcslen(base), tail_offset = 0, tail_length;
+    int need_separator;
+    wchar_t *joined;
+
+    while(tail[tail_offset] == L'\\' || tail[tail_offset] == L'/')
+        tail_offset++;
+    tail_length = wcslen(tail + tail_offset);
+    need_separator = base_length > 0 && base[base_length - 1] != L'\\' && tail_length > 0;
+    joined = (wchar_t *)cm_xmalloc_array(cm_size_add(cm_size_add(base_length, tail_length), need_separator ? 2U : 1U), sizeof(wchar_t));
+    memcpy(joined, base, base_length * sizeof(wchar_t));
+    if(need_separator)
+        joined[base_length++] = L'\\';
+    memcpy(joined + base_length, tail + tail_offset, cm_size_add(tail_length, 1U) * sizeof(wchar_t));
+
+    return joined;
+}
+
+static size_t cm_windows_unc_root_length(const wchar_t *path)
+{
+    size_t i;
+
+    if(!path || path[0] != L'\\' || path[1] != L'\\')
+        return 0;
+    i = 2;
+    while(path[i] && path[i] != L'\\')
+        i++;
+    if(!path[i])
+        return i;
+    i++;
+    while(path[i] && path[i] != L'\\')
+        i++;
+    if(path[i] == L'\\')
+        i++;
+
+    return i;
+}
+
+static wchar_t *cm_windows_lexical_rooted_wide(const wchar_t *path, size_t root_length)
+{
+    size_t length = wcslen(path), read_pos, write_pos, depth = 0;
+    size_t *segment_starts;
+    wchar_t *result;
+    int trailing_separator;
+
+    if(root_length == 0 || root_length > length)
+    {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    result = (wchar_t *)cm_xmalloc_array(cm_size_add(length, 2U), sizeof(wchar_t));
+    segment_starts = (size_t *)cm_xmalloc_array(cm_size_add(length, 1U), sizeof(size_t));
+    memcpy(result, path, root_length * sizeof(wchar_t));
+    write_pos = root_length;
+    read_pos = root_length;
+    trailing_separator = length > root_length && path[length - 1] == L'\\';
+
+    while(path[read_pos])
+    {
+        size_t start, segment_length;
+
+        while(path[read_pos] == L'\\')
+            read_pos++;
+        if(!path[read_pos])
+            break;
+        start = read_pos;
+        while(path[read_pos] && path[read_pos] != L'\\')
+            read_pos++;
+        segment_length = read_pos - start;
+        if(segment_length == 1 && path[start] == L'.')
+            continue;
+        if(segment_length == 2 && path[start] == L'.' && path[start + 1] == L'.')
+        {
+            if(depth > 0)
+                write_pos = segment_starts[--depth];
+            continue;
+        }
+        if(write_pos > 0 && result[write_pos - 1] != L'\\')
+            result[write_pos++] = L'\\';
+        segment_starts[depth++] = write_pos > root_length && result[write_pos - 1] == L'\\' ? write_pos - 1 : write_pos;
+        memcpy(result + write_pos, path + start, segment_length * sizeof(wchar_t));
+        write_pos += segment_length;
+    }
+
+    if(trailing_separator && write_pos > root_length && result[write_pos - 1] != L'\\')
+        result[write_pos++] = L'\\';
+    result[write_pos] = L'\0';
+    free(segment_starts);
+
+    return result;
+}
+
+static wchar_t *cm_windows_lexical_absolute_wide(const wchar_t *path)
+{
+    size_t length = wcslen(path), root_length = 0;
+
+    if(length >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\')
+        root_length = 3;
+    else if(length >= 2 && path[0] == L'\\' && path[1] == L'\\')
+        root_length = cm_windows_unc_root_length(path);
+    if(root_length == 0)
+    {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    return cm_windows_lexical_rooted_wide(path, root_length);
+}
+
+static int cm_windows_extended_volume_root_length(const wchar_t *path, size_t *root_length)
+{
+    static const wchar_t prefix[] = L"volume{";
+    size_t length = wcslen(path), i, cursor;
+
+    if(length < 13)
+        return 0;
+    for(i = 0; i < CM_ARRAY_LEN(prefix) - 1U; i++)
+        if((wchar_t)towlower(path[4 + i]) != prefix[i])
+            return 0;
+    cursor = 4 + CM_ARRAY_LEN(prefix) - 1U;
+    while(path[cursor] && path[cursor] != L'}')
+        cursor++;
+    if(path[cursor] != L'}' || path[cursor + 1] != L'\\')
+        return 0;
+    *root_length = cursor + 2U;
+
+    return 1;
+}
+
+static wchar_t *cm_windows_normalize_namespace_path_wide(const wchar_t *input)
+{
+    wchar_t *normalized = cm_wcsdup(input), *logical = NULL, *canonical = NULL, *result = NULL;
+    size_t length, canonical_length, root_length;
+
+    cm_windows_normalize_separators_wide(normalized);
+    if(wcsncmp(normalized, L"\\\\?\\", 4) != 0)
+        return normalized;
+
+    length = wcslen(normalized);
+    if(length >= 7 && iswalpha(normalized[4]) && normalized[5] == L':' && normalized[6] == L'\\')
+        logical = cm_wcsdup(normalized + 4);
+    else if(length >= 8 && (wchar_t)towlower(normalized[4]) == L'u' && (wchar_t)towlower(normalized[5]) == L'n' && (wchar_t)towlower(normalized[6]) == L'c' && normalized[7] == L'\\')
+    {
+        size_t tail_length = wcslen(normalized + 8);
+
+        logical = (wchar_t *)cm_xmalloc_array(cm_size_add(tail_length, 3U), sizeof(wchar_t));
+        logical[0] = L'\\';
+        logical[1] = L'\\';
+        memcpy(logical + 2, normalized + 8, cm_size_add(tail_length, 1U) * sizeof(wchar_t));
+    }
+    else if(cm_windows_extended_volume_root_length(normalized, &root_length))
+    {
+        canonical = cm_windows_lexical_rooted_wide(normalized, root_length);
+        free(normalized);
+        return canonical;
+    }
+    else
+        return normalized;
+
+    canonical = cm_windows_lexical_absolute_wide(logical);
+    free(logical);
+    if(!canonical)
+    {
+        free(normalized);
+        return NULL;
+    }
+
+    canonical_length = wcslen(canonical);
+    if(canonical[0] == L'\\' && canonical[1] == L'\\')
+    {
+        result = (wchar_t *)cm_xmalloc_array(cm_size_add(canonical_length, 7U), sizeof(wchar_t));
+        memcpy(result, L"\\\\?\\UNC\\", 8U * sizeof(wchar_t));
+        memcpy(result + 8, canonical + 2, (canonical_length - 1U) * sizeof(wchar_t));
+    }
+    else
+    {
+        result = (wchar_t *)cm_xmalloc_array(cm_size_add(canonical_length, 5U), sizeof(wchar_t));
+        memcpy(result, L"\\\\?\\", 4U * sizeof(wchar_t));
+        memcpy(result + 4, canonical, cm_size_add(canonical_length, 1U) * sizeof(wchar_t));
+    }
+    free(canonical);
+    free(normalized);
+
+    return result;
+}
+
+static wchar_t *cm_windows_long_full_path_wide(const wchar_t *input)
+{
+    wchar_t *normalized = cm_wcsdup(input), *base = NULL, *combined = NULL, *result;
+    wchar_t drive_probe[4];
+
+    cm_windows_normalize_separators_wide(normalized);
+    if(cm_windows_is_namespace_path(normalized))
+    {
+        result = cm_windows_normalize_namespace_path_wide(normalized);
+        free(normalized);
+        return result;
+    }
+
+    if(normalized[0] == L'\\' && normalized[1] == L'\\')
+        combined = cm_wcsdup(normalized);
+    else if(iswalpha(normalized[0]) && normalized[1] == L':' && normalized[2] == L'\\')
+        combined = cm_wcsdup(normalized);
+    else if(iswalpha(normalized[0]) && normalized[1] == L':')
+    {
+        drive_probe[0] = normalized[0];
+        drive_probe[1] = L':';
+        drive_probe[2] = L'.';
+        drive_probe[3] = L'\0';
+        base = cm_windows_get_short_full_path_wide(drive_probe);
+        if(base)
+            combined = cm_windows_join_wide_paths(base, normalized + 2);
+    }
+    else if(normalized[0] == L'\\')
+    {
+        base = cm_windows_get_short_full_path_wide(L"\\");
+        if(base)
+            combined = cm_windows_join_wide_paths(base, normalized + 1);
+    }
+    else
+    {
+        base = cm_windows_get_current_directory_wide();
+        if(base)
+            combined = cm_windows_join_wide_paths(base, normalized);
+    }
+    free(base);
+    free(normalized);
+    if(!combined)
+        return NULL;
+
+    result = cm_windows_lexical_absolute_wide(combined);
+    free(combined);
+
+    return result;
+}
+
+static wchar_t *cm_windows_full_path_wide(const wchar_t *input)
+{
+    wchar_t *full;
+
+    if(cm_windows_is_namespace_path(input))
+        return cm_windows_normalize_namespace_path_wide(input);
+    if(wcslen(input) < CM_WINDOWS_EXTENDED_PATH_THRESHOLD)
+    {
+        full = cm_windows_get_short_full_path_wide(input);
+        if(full)
+            return full;
+        if(errno != ENAMETOOLONG)
+            return NULL;
+    }
+
+    return cm_windows_long_full_path_wide(input);
+}
+
+static wchar_t *cm_windows_get_environment_wide(const wchar_t *name)
+{
+    wchar_t *buffer;
+    DWORD needed, written;
+
+    SetLastError(ERROR_SUCCESS);
+    needed = GetEnvironmentVariableW(name, NULL, 0);
+    if(!needed)
+        return NULL;
+    for(;;)
+    {
+        buffer = (wchar_t *)cm_xmalloc_array((size_t)needed, sizeof(wchar_t));
+        written = GetEnvironmentVariableW(name, buffer, needed);
+        if(written > 0 && written < needed)
+            return buffer;
+        free(buffer);
+        if(!written)
+        {
+            DWORD error = GetLastError();
+
+            if(error != ERROR_SUCCESS && error != ERROR_ENVVAR_NOT_FOUND)
+                cm_set_errno_from_win32(error);
+            return NULL;
+        }
+        needed = written;
+    }
+}
+
+static wchar_t *cm_windows_get_windows_directory_wide()
+{
+    wchar_t *buffer;
+    DWORD capacity = MAX_PATH, written;
+
+    for(;;)
+    {
+        buffer = (wchar_t *)cm_xmalloc_array((size_t)capacity, sizeof(wchar_t));
+        written = GetWindowsDirectoryW(buffer, capacity);
+        if(written > 0 && written < capacity)
+            return buffer;
+        free(buffer);
+        if(!written)
+        {
+            cm_set_errno_from_win32(GetLastError());
+            return NULL;
+        }
+        capacity = written + 1U;
+    }
+}
+
+static char *cm_windows_temp_directory_utf8()
+{
+    static const wchar_t *names[] = {L"TMP", L"TEMP", L"USERPROFILE"};
+    wchar_t *selected = NULL, *full = NULL;
+    char *utf8;
+    size_t i;
+
+    for(i = 0; i < CM_ARRAY_LEN(names); i++)
+    {
+        selected = cm_windows_get_environment_wide(names[i]);
+        if(selected && selected[0])
+            break;
+        free(selected);
+        selected = NULL;
+    }
+    if(!selected)
+        selected = cm_windows_get_windows_directory_wide();
+    if(!selected)
+        return NULL;
+
+    full = cm_windows_full_path_wide(selected);
+    free(selected);
+    if(!full)
+        return NULL;
+
+    utf8 = cm_wide_to_utf8(full);
+    free(full);
+    if(!utf8)
+        errno = EINVAL;
+
+    return utf8;
+}
+
+static wchar_t *cm_windows_path_to_wide(const char *path)
+{
+    wchar_t *input, *full, *extended;
+    size_t length;
+
+    input = cm_utf8_to_wide(path);
+    if(!input)
+    {
+        errno = EINVAL;
+        return NULL;
+    }
+    full = cm_windows_full_path_wide(input);
+    free(input);
+    if(!full)
+        return NULL;
+    if(cm_windows_is_namespace_path(full))
+        return full;
+
+    length = wcslen(full);
+    if(length < CM_WINDOWS_EXTENDED_PATH_THRESHOLD)
+        return full;
+    if(length >= CM_PATH_MAX - 8U)
+    {
+        free(full);
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    if(length >= 2 && full[0] == L'\\' && full[1] == L'\\')
+    {
+        extended = (wchar_t *)cm_xmalloc_array(cm_size_add(length, 7U), sizeof(wchar_t));
+        memcpy(extended, L"\\\\?\\UNC\\", 8U * sizeof(wchar_t));
+        memcpy(extended + 8, full + 2, (length - 1U) * sizeof(wchar_t));
+    }
+    else
+    {
+        extended = (wchar_t *)cm_xmalloc_array(cm_size_add(length, 5U), sizeof(wchar_t));
+        memcpy(extended, L"\\\\?\\", 4U * sizeof(wchar_t));
+        memcpy(extended + 4, full, cm_size_add(length, 1U) * sizeof(wchar_t));
+    }
+    free(full);
+
+    return extended;
+}
+
 static void cm_set_errno_from_win32(DWORD error)
 {
     switch(error)
@@ -939,6 +1421,16 @@ static void cm_set_errno_from_win32(DWORD error)
         case ERROR_OUTOFMEMORY:
             errno = ENOMEM;
             break;
+#ifdef ERROR_FILENAME_EXCED_RANGE
+        case ERROR_FILENAME_EXCED_RANGE:
+            errno = ENAMETOOLONG;
+            break;
+#endif
+#ifdef ERROR_BUFFER_OVERFLOW
+        case ERROR_BUFFER_OVERFLOW:
+            errno = ENAMETOOLONG;
+            break;
+#endif
         case ERROR_INVALID_NAME:
         case ERROR_INVALID_PARAMETER:
             errno = EINVAL;
@@ -956,7 +1448,7 @@ static void cm_set_errno_from_win32(DWORD error)
 
 static FILE *cm_fopen(const char *path, const char *mode)
 {
-    wchar_t *p = cm_utf8_to_wide(path), *m = cm_utf8_to_wide(mode);
+    wchar_t *p = cm_windows_path_to_wide(path), *m = cm_utf8_to_wide(mode);
     FILE *f = NULL;
 
     if(p && m)
@@ -969,7 +1461,7 @@ static FILE *cm_fopen(const char *path, const char *mode)
 
 static int cm_unlink(const char *path)
 {
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     int ok = w ? _wunlink(w) : -1;
 
     free(w);
@@ -979,7 +1471,7 @@ static int cm_unlink(const char *path)
 
 static int cm_rename(const char *a, const char *b)
 {
-    wchar_t *wa = cm_utf8_to_wide(a), *wb = cm_utf8_to_wide(b);
+    wchar_t *wa = cm_windows_path_to_wide(a), *wb = cm_windows_path_to_wide(b);
     int ok = -1;
 
     if(wa && wb)
@@ -1002,7 +1494,7 @@ static int cm_rename(const char *a, const char *b)
 
 static int cm_mkdir_one(const char *path)
 {
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     int ok = -1;
 
     if(w)
@@ -1015,7 +1507,7 @@ static int cm_mkdir_one(const char *path)
 
 static int cm_chmod_0644(const char *path)
 {
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     int ok = w ? _wchmod(w, _S_IREAD | _S_IWRITE) : -1;
 
     free(w);
@@ -1029,10 +1521,25 @@ static int cm_chmod_0644(const char *path)
  * continue beyond PATH_MAX when the filesystem itself permits the directory
  * hierarchy.  The returned descriptor owns the parent directory of *leaf.
  */
+static int cm_posix_directory_open_flags()
+{
+    int flags = O_DIRECTORY | O_CLOEXEC;
+
+#if defined(O_PATH)
+    flags |= O_PATH;
+#elif defined(O_SEARCH)
+    flags |= O_SEARCH;
+#else
+    flags |= O_RDONLY;
+#endif
+
+    return flags;
+}
+
 static int cm_posix_parent_fd(const char *path, char **leaf)
 {
     CmStrVec segments = {0};
-    int fd, next;
+    int fd, next, directory_flags = cm_posix_directory_open_flags();
     size_t i;
 
     if(!path || !*path || !leaf)
@@ -1042,7 +1549,7 @@ static int cm_posix_parent_fd(const char *path, char **leaf)
     }
 
     cm_split_path_segments(path, &segments);
-    fd = open(path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    fd = open(path[0] == '/' ? "/" : ".", directory_flags);
     if(fd < 0)
     {
         cm_sv_free(&segments);
@@ -1058,7 +1565,7 @@ static int cm_posix_parent_fd(const char *path, char **leaf)
 
     for(i = 0; i + 1 < segments.n; i++)
     {
-        next = openat(fd, segments.v[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        next = openat(fd, segments.v[i], directory_flags);
         if(next < 0)
         {
             int saved_errno = errno;
@@ -1314,28 +1821,16 @@ static char *cm_path_normalize(const char *path)
 {
 #ifdef _WIN32
     wchar_t *input, *full;
-    DWORD needed, written;
     char *result, *p;
     const char *effective = (path && *path) ? path : ".";
 
     input = cm_utf8_to_wide(effective);
     if(!input)
         return cm_xstrdup(effective);
-    needed = GetFullPathNameW(input, 0, NULL, NULL);
-    if(!needed)
-    {
-        free(input);
-        return cm_xstrdup(effective);
-    }
-
-    full = (wchar_t *)cm_xmalloc_array((size_t)needed, sizeof(wchar_t));
-    written = GetFullPathNameW(input, needed, full, NULL);
+    full = cm_windows_full_path_wide(input);
     free(input);
-    if(!written || written >= needed)
-    {
-        free(full);
+    if(!full)
         return cm_xstrdup(effective);
-    }
 
     result = cm_wide_to_utf8(full);
     free(full);
@@ -1415,7 +1910,7 @@ static char *cm_path_real_existing(const char *path)
 {
 #ifdef _WIN32
     typedef DWORD (WINAPI *CmGetFinalPathNameByHandleWFn)(HANDLE, LPWSTR, DWORD, DWORD);
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     HANDLE h;
     HMODULE kernel;
     CmGetFinalPathNameByHandleWFn get_final;
@@ -1492,7 +1987,7 @@ static int cm_file_info(const char *path, int follow, CmFileInfo *out)
 {
     memset(out, 0, sizeof(*out));
 #ifdef _WIN32
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     WIN32_FILE_ATTRIBUTE_DATA data;
     DWORD attrs;
 
@@ -2154,7 +2649,7 @@ static int cm_is_readable_file(const char *p)
         return 0;
 #ifdef _WIN32
     {
-        wchar_t *w = cm_utf8_to_wide(p);
+        wchar_t *w = cm_windows_path_to_wide(p);
         int ok = w ? (_waccess(w, 4) == 0) : 0;
 
         free(w);
@@ -2177,7 +2672,7 @@ static int cm_is_readable_file(const char *p)
 static int cm_set_file_mode(const char *path, unsigned long mode)
 {
 #ifdef _WIN32
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     int m = 0, rc;
 
     if(!w)
@@ -2211,7 +2706,7 @@ static int cm_set_mtime(const char *path, CmTimestamp ts)
     if(!ts.valid)
         return -1;
 #ifdef _WIN32
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     HANDLE h;
     ULARGE_INTEGER u;
     FILETIME ft;
@@ -2285,11 +2780,27 @@ static int cm_make_dirs(const char *path)
     size_t start = 0;
 
 #ifdef _WIN32
-    if(n[0] && n[1] && isalpha((unsigned char)n[0]) && n[1] == ':' && cm_is_sep(n[2]))
+    size_t length = strlen(n);
+
+    if(length >= 3 && isalpha((unsigned char)n[0]) && n[1] == ':' && cm_is_sep(n[2]))
     {
         start = 3;
     }
-    else if(cm_is_sep(n[0]) && cm_is_sep(n[1]))
+    else if(length >= 8 && cm_is_sep(n[0]) && cm_is_sep(n[1]) && n[2] == '?' && cm_is_sep(n[3]) &&
+        cm_ascii_tolower((unsigned char)n[4]) == 'u' && cm_ascii_tolower((unsigned char)n[5]) == 'n' &&
+        cm_ascii_tolower((unsigned char)n[6]) == 'c' && cm_is_sep(n[7]))
+    {
+        const char *q = n + 8;
+
+        while(*q && !cm_is_sep(*q))
+            q++;
+        if(*q)
+            q++;
+        while(*q && !cm_is_sep(*q))
+            q++;
+        start = *q ? (size_t)(q - n + 1) : length;
+    }
+    else if(length >= 2 && cm_is_sep(n[0]) && cm_is_sep(n[1]))
     {
         const char *q = n + 2;
 
@@ -2299,7 +2810,7 @@ static int cm_make_dirs(const char *path)
             q++;
         while(*q && !cm_is_sep(*q))
             q++;
-        start = *q ? (size_t)(q - n + 1) : strlen(n);
+        start = *q ? (size_t)(q - n + 1) : length;
     }
     else
     {
@@ -2383,6 +2894,31 @@ static void cm_split_path_segments(const char *path, CmStrVec *out)
     }
 }
 
+#ifdef _WIN32
+static char *cm_windows_logical_path(const char *path)
+{
+    size_t length = strlen(path);
+
+    if(length >= 8 && cm_is_sep(path[0]) && cm_is_sep(path[1]) && path[2] == '?' && cm_is_sep(path[3]) &&
+        cm_ascii_tolower((unsigned char)path[4]) == 'u' && cm_ascii_tolower((unsigned char)path[5]) == 'n' &&
+        cm_ascii_tolower((unsigned char)path[6]) == 'c' && cm_is_sep(path[7]))
+    {
+        CmBuf out;
+
+        cm_buf_init(&out);
+        cm_buf_append(&out, "\\\\");
+        cm_buf_append(&out, path + 8);
+
+        return cm_buf_take(&out);
+    }
+    if(length >= 7 && cm_is_sep(path[0]) && cm_is_sep(path[1]) && path[2] == '?' && cm_is_sep(path[3]) &&
+        isalpha((unsigned char)path[4]) && path[5] == ':' && cm_is_sep(path[6]))
+        return cm_xstrdup(path + 4);
+
+    return cm_xstrdup(path);
+}
+#endif
+
 static char *cm_relative_path(const char *from_dir, const char *target)
 {
     char *a = cm_path_normalize(from_dir);
@@ -2392,9 +2928,24 @@ static char *cm_relative_path(const char *from_dir, const char *target)
     CmBuf out;
 
 #ifdef _WIN32
-    if(isalpha((unsigned char)a[0]) && a[1] == ':' &&
-        isalpha((unsigned char)b[0]) && b[1] == ':' &&
-        cm_ascii_tolower((unsigned char)a[0]) != cm_ascii_tolower((unsigned char)b[0]))
+    int a_drive, b_drive, a_unc, b_unc;
+    char *logical_a = cm_windows_logical_path(a);
+    char *logical_b = cm_windows_logical_path(b);
+
+    free(a);
+    free(b);
+    a = logical_a;
+    b = logical_b;
+    a_drive = isalpha((unsigned char)a[0]) && a[1] == ':';
+    b_drive = isalpha((unsigned char)b[0]) && b[1] == ':';
+    a_unc = a[0] && a[1] && cm_is_sep(a[0]) && cm_is_sep(a[1]);
+    b_unc = b[0] && b[1] && cm_is_sep(b[0]) && cm_is_sep(b[1]);
+    if((a_drive || b_drive) && (!a_drive || !b_drive || cm_ascii_tolower((unsigned char)a[0]) != cm_ascii_tolower((unsigned char)b[0])))
+    {
+        free(a);
+        return b;
+    }
+    if((a_unc || b_unc) && (!a_unc || !b_unc))
     {
         free(a);
         return b;
@@ -2404,6 +2955,13 @@ static char *cm_relative_path(const char *from_dir, const char *target)
     cm_split_path_segments(a, &av);
     cm_split_path_segments(b, &bv);
 #ifdef _WIN32
+    if(a_unc && (av.n < 2 || bv.n < 2 || !cm_ascii_equal_ci(av.v[0], bv.v[0]) || !cm_ascii_equal_ci(av.v[1], bv.v[1])))
+    {
+        cm_sv_free(&av);
+        cm_sv_free(&bv);
+        free(a);
+        return b;
+    }
     while(i < av.n && i < bv.n && cm_ascii_equal_ci(av.v[i], bv.v[i]))
         i++;
 #else
@@ -2444,7 +3002,7 @@ static int cm_list_directory(const char *dir, CmStrVec *names)
 {
 #ifdef _WIN32
     char *pattern = cm_path_join(dir, "*");
-    wchar_t *w = cm_utf8_to_wide(pattern);
+    wchar_t *w = cm_windows_path_to_wide(pattern);
 
     WIN32_FIND_DATAW fd;
     HANDLE h;
@@ -4051,36 +4609,43 @@ static int cm_hash_with_provider(const char *path, const CmAlgorithmInfo *a, CmP
 }
 
 static int cm_reserve_exclusive(const char *path);
+static char *cm_temp_in_dir(const char *dir);
 static void cm_random_hex(char out[9]);
 static void cm_registry_remove(CmStrVec *v, const char *path);
 
 static int cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
 {
     char *digest = NULL;
+    int rc;
+
+#ifdef _WIN32
+    char *base = cm_windows_temp_directory_utf8();
+    char *tmpname;
+
+    if(!base)
+        return 0;
+    tmpname = cm_temp_in_dir(base);
+    free(base);
+    if(!tmpname)
+        return 0;
+
+    rc = cm_hash_with_provider(tmpname, a, p, &digest, 0);
+    free(digest);
+    cm_unlink(tmpname);
+    cm_registry_remove(&g_temp_paths, tmpname);
+    free(tmpname);
+
+    return rc == 1;
+#else
     char tmpname[CM_PATH_MAX];
-    int rc = 0, attempt;
+    int attempt;
 
     for(attempt = 0; attempt < 100; ++attempt)
     {
         char hex[9];
 
         cm_random_hex(hex);
-#ifdef _WIN32
-        wchar_t wbase[MAX_PATH];
-        char *base;
-        DWORD wn = GetTempPathW((DWORD)CM_ARRAY_LEN(wbase), wbase);
-
-        if(!wn || wn >= CM_ARRAY_LEN(wbase))
-            return 0;
-        base = cm_wide_to_utf8(wbase);
-        if(!base)
-            return 0;
-        snprintf(tmpname, sizeof(tmpname), "%scm-probe-%lu-%s.tmp", base, (unsigned long)GetCurrentProcessId(), hex);
-        free(base);
-#else
         snprintf(tmpname, sizeof(tmpname), "/tmp/.checksum-manifest-c-probe-%ld-%s", (long)getpid(), hex);
-#endif
-
         if(cm_reserve_exclusive(tmpname) == 0)
         {
             cm_sv_push(&g_temp_paths, tmpname);
@@ -4093,6 +4658,7 @@ static int cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
     }
 
     return 0;
+#endif
 }
 
 static CmProvider cm_pick_provider(const CmAlgorithmInfo *a, const char *forced, int *ok)
@@ -4195,6 +4761,7 @@ static void cm_print_help(const char *argv0)
     size_t i;
 
     printf("Checksum Manifest Utility\n\n");
+
     printf("Usage:\n");
     printf("  %s check ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]\n", program);
     printf("  %s c ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]\n", program);
@@ -4206,6 +4773,8 @@ static void cm_print_help(const char *argv0)
     printf("  %s d ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH\n", program);
     printf("  %s format ALGORITHMS [OPTIONS] PATH\n", program);
     printf("  %s f ALGORITHMS [OPTIONS] PATH\n", program);
+    printf("  %s inspect ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]\n", program);
+    printf("  %s i ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]\n", program);
     printf("  %s join ALGORITHMS [OPTIONS] PATH\n", program);
     printf("  %s j ALGORITHMS [OPTIONS] PATH\n", program);
     printf("  %s split ALGORITHM [OPTIONS] CHECKSUM_FILE\n", program);
@@ -4220,6 +4789,7 @@ static void cm_print_help(const char *argv0)
     printf("  generate, g    Generate checksum manifests for files.\n");
     printf("  derive, d      Create missing target manifests; compare entry paths in existing targets.\n");
     printf("  format, f      Rewrite manifest delimiter, newline, and path formatting.\n");
+    printf("  inspect, i     Report selected manifests by recognized checksum-entry count.\n");
     printf("  join, j        Join selected checksum manifests into combined manifests.\n");
     printf("  split, s       Split one combined manifest into per-entry checksum files.\n");
     printf("  remove, r      Delete selected checksum manifest files after three confirmations.\n\n");
@@ -4228,38 +4798,41 @@ static void cm_print_help(const char *argv0)
     printf("  Names are case-insensitive. sfv is a reserved alias for crc32.\n");
     printf("  all is standalone and cannot be combined with comma-separated names.\n");
     printf("  In check/hash/generate/derive target selection, all expands to every built-in\n");
-    printf("  hash algorithm. In format/join/remove and derive --from, it expands to the\n");
+    printf("  hash algorithm. In format/inspect/join/remove and derive --from, it expands to the\n");
     printf("  same built-in extension list; split rejects all.\n");
     printf("  check/hash/generate/derive target selectors require built-in hash algorithms.\n");
-    printf("  format/join/remove/split and derive --from also accept custom extension\n");
+    printf("  format/inspect/join/remove/split and derive --from also accept custom extension\n");
     printf("  names matching [A-Za-z0-9][A-Za-z0-9._+-]*. Duplicate normalized names\n");
     printf("  are ignored.\n\n");
 
     printf("Options:\n");
-    printf("  -r, --recursive              Recurse for check/hash/generate/derive/format/join/remove.\n");
+    printf("  -r, --recursive              Recurse for check/hash/generate/derive/format/inspect/join/remove.\n");
     printf("                               Invalid with split.\n");
     printf("  -o, --output PATH            check: report file. hash: one output file instead of stdout.\n");
     printf("                               generate: output root in separate\n");
     printf("                               layout or output file/directory in single layout.\n");
-    printf("                               derive: output root directory. join: output file for\n");
+    printf("                               derive: output root directory. inspect: report file. join: output file for\n");
     printf("                               one algorithm or directory for multiple algorithms.\n");
     printf("                               split: output root directory. Invalid with format/remove.\n");
-    printf("                               Existing check/hash -o/generate/join/split outputs are preserved\n");
-    printf("                               by collision-safe names.\n");
+    printf("                               Existing outputs from check -o, hash -o, generate, inspect -o, join, and\n");
+    printf("                               split are preserved by collision-safe names.\n");
     printf("  -F, --from ALGORITHMS        derive only and required there. Select reference-manifest\n");
     printf("                               extensions.\n");
     printf("  -d, --delimiter VALUE        Non-CRC output must be exactly two spaces or \" *\". CRC\n");
     printf("                               accepts this option but always writes its filename-first\n");
     printf("                               single-space format. Input entry recognition is independent\n");
-    printf("                               of this option. Invalid with remove.\n");
+    printf("                               of this option. Invalid with inspect/remove.\n");
     printf("  -n, --newline MODE           unix|lf, windows|crlf, classic-mac|cr, or system.\n");
     printf("                               Case-insensitive. Default: unix. Invalid with remove.\n");
+    printf("  -m, --match MODE             inspect only: all, single, multiple, or empty. Case-insensitive.\n");
+    printf("                               Default: all. Filters only per-manifest status output;\n");
+    printf("                               Entries and Summary always describe the full inspection.\n");
     printf("  -s, --path-separator MODE    slash, backslash, default, or system. Case-insensitive.\n");
     printf("                               Default: slash. In format, default preserves separators\n");
     printf("                               while slash/backslash/system normalize both separator\n");
     printf("                               characters textually. In check/derive/join/split the mode\n");
     printf("                               controls manifest-path interpretation; hash/generate control\n");
-    printf("                               output. Invalid with remove.\n");
+    printf("                               output. Invalid with inspect/remove.\n");
     printf("  -t, --tools SPEC             check/hash/generate/derive only. Pin native providers with\n");
     printf("                               ALGO:openssl|libgcrypt|librhash[,ALGO:PROVIDER...].\n");
     printf("                               Provider aliases: gcrypt and rhash. Pinned algorithms do\n");
@@ -4273,10 +4846,10 @@ static void cm_print_help(const char *argv0)
     printf("  -D, --digest-only            hash only. Omit filenames and manifest record formatting.\n");
     printf("                               With multiple algorithms, keep aligned [algorithm] tags.\n");
     printf("  -l, --layout MODE            generate only: separate or single. Default: separate.\n");
-    printf("  -N, --natural-sort           hash/generate/join/derive. generate requires --layout single.\n");
-    printf("                               join sorts discovery; derive sorts valid reference entries.\n");
+    printf("  -N, --natural-sort           hash/generate/derive/inspect/join. generate requires --layout single.\n");
+    printf("                               inspect/join sort discovery per directory; derive sorts valid reference entries.\n");
     printf("                               Mutually exclusive with -L.\n");
-    printf("  -L, --lexicographic-sort     hash/generate/join/derive. generate requires --layout single.\n");
+    printf("  -L, --lexicographic-sort     hash/generate/derive/inspect/join. generate requires --layout single.\n");
     printf("                               Bytewise order. Mutually exclusive with -N.\n");
     printf("  -T, --update-timestamp       derive/format/remove only. Disable their best-effort mtime\n");
     printf("                               preservation and leave timestamp updates to normal filesystem\n");
@@ -4297,31 +4870,43 @@ static void cm_print_help(const char *argv0)
     printf("  explicit files require a matching selected-algorithm extension for disambiguation.\n");
     printf("  Directory discovery always remains extension-based. With multiple inputs every\n");
     printf("  input must be a regular file. Recursive discovery applies to a single directory.\n\n");
-    printf("  hash writes only hash output. With --digest-only, one selected algorithm writes\n");
-    printf("  only the digest; multiple algorithms write [algorithm] + aligned padding + digest.\n");
-    printf("  Otherwise one algorithm uses the standard manifest grammar and multiple algorithms\n");
-    printf("  prefix each standard record with an aligned [algorithm] tag. Output is file-major\n");
-    printf("  and algorithm order follows the selector. In digest-only output, --delimiter and\n");
-    printf("  --path-separator have no effect. Without --digest-only, paths are relative to the\n");
-    printf("  input root. -o writes the same byte stream to a\n");
-    printf("  collision-safe file; a collision-selected pathname is reported on stderr.\n");
-    printf("  A regular stdout file inside a scanned directory is excluded from hash inputs.\n");
-    printf("  Do not redirect stdout onto the input file itself: the shell truncates it before\n");
-    printf("  execution. Early pipe closure is normal termination. No summary is printed.\n");
-    printf("  Defaults match generate where the options overlap.\n\n");
+
+    printf("  hash calculates selected checksums for discovered files. --digest-only omits\n");
+    printf("  filenames; otherwise standard manifest records are written. Multiple algorithms\n");
+    printf("  use aligned [algorithm] tags and selector order. -o writes the same byte stream to\n");
+    printf("  a collision-safe file. A regular stdout file inside the scan is excluded from\n");
+    printf("  inputs, early pipe closure is successful termination, and no summary is printed.\n\n");
+
     printf("  generate defaults to filter '*', case-sensitive matching, and separate layout.\n");
     printf("  Natural/lexicographic sorting in single layout is per directory during\n");
     printf("  depth-first traversal rather than a final global sort.\n\n");
+
     printf("  derive never rehashes or rewrites an existing target manifest. Existing\n");
     printf("  targets are checked by path-occurrence coverage; extra target entries are\n");
     printf("  allowed. An existing zero-entry target is compared as empty; a non-empty\n");
     printf("  reference therefore reports MISSING/INCOMPLETE. A missing target is committed\n");
     printf("  only after every valid reference entry can be represented, read, and hashed.\n");
-    printf("  --from order determines creation\n");
-    printf("  precedence when several references map to the same target.\n\n");
+    printf("  --from order determines creation precedence when several references map to\n");
+    printf("  the same target.\n\n");
+
     printf("  format prints a plan and starts rewriting only after case-insensitive y/yes\n");
     printf("  confirmation. Digest values and non-entry lines are preserved; manifests\n");
     printf("  containing NUL and symbolic-link manifest paths are not rewritten.\n\n");
+
+    printf("  inspect uses the same input selection as check but only parses manifests; it\n");
+    printf("  never follows Entry paths. SINGLE means one recognized Entry, MULTIPLE means\n");
+    printf("  more than one, EMPTY means none, and UNREAD means the manifest cannot be read.\n");
+    printf("  --match filters only per-manifest status lines; Entries and Summary cover the\n");
+    printf("  full inspection. Sorting is per directory, and displayed paths always use slash.\n\n");
+
+    printf("  join parses selected manifests without hashing and writes combined manifests.\n");
+    printf("  Entry paths are rebased for the combined output; discovery sorting is per\n");
+    printf("  directory. Existing outputs are preserved with collision-safe names.\n\n");
+
+    printf("  split parses one manifest for exactly one selector and writes per-entry checksum\n");
+    printf("  files without reading Entry targets. With -o, outputs are confined below the\n");
+    printf("  output root; lexical traversal and symlink-parent escapes are rejected.\n\n");
+
     printf("  remove requires two case-insensitive y/yes confirmations and then exactly\n");
     printf("  lowercase yes with no surrounding whitespace. Discovery/deletion starts only\n");
     printf("  after that final confirmation.\n\n");
@@ -4333,7 +4918,7 @@ static void cm_print_help(const char *argv0)
     printf("  Automatic order: OpenSSL -> Libgcrypt -> LibRHash. Actual support is probed\n");
     printf("  at runtime for each required algorithm.\n");
     printf("  hash always hashes selected files.\n");
-    printf("  format/join/split/remove do not hash.\n");
+    printf("  format/inspect/join/split/remove do not hash. inspect only reads selected manifests.\n");
     printf("  derive needs a provider only when a target manifest is missing.\n\n");
 
     printf("Memory safety:\n");
@@ -4353,8 +4938,8 @@ static void cm_print_help(const char *argv0)
         else
             printf(" ");
     }
-
     printf("\n");
+
     printf("Extensions:\n");
     printf("  crc32               -> .sfv\n");
     printf("  crc32c              -> .crc32c\n");
@@ -4378,7 +4963,7 @@ static void cm_print_help(const char *argv0)
     printf("  CRC32/CRC32C: FILENAME + whitespace + HEX.\n");
     printf("                Digest length is intentionally not validated. Blank lines and\n");
     printf("                unescaped #/; comment lines are ignored. Escaped records decode\n");
-    printf("                \\\\, \\n, and \\r in filenames. check/derive/join/split skip\n");
+    printf("                \\\\, \\n, and \\r in filenames. check/derive/inspect/join/split skip\n");
     printf("                unrecognized and NUL-containing lines; format refuses to rewrite\n");
     printf("                any manifest containing NUL.\n\n");
 
@@ -4394,8 +4979,14 @@ static void cm_print_help(const char *argv0)
     printf("  INCOMPLETE  An existing target is missing at least one reference occurrence.\n");
     printf("  MISSING     A reference occurrence is not covered by an existing target.\n\n");
 
+    printf("Inspect labels:\n");
+    printf("  SINGLE    Manifest has exactly one recognized Entry.\n");
+    printf("  MULTIPLE  Manifest has more than one recognized Entry.\n");
+    printf("  EMPTY     Manifest has no recognized Entries.\n");
+    printf("  UNREAD    Manifest could not be read.\n\n");
+
     printf("Output and safety:\n");
-    printf("  check -o, hash -o, generate, join, and split preserve existing outputs and choose\n");
+    printf("  check -o, hash -o, generate, inspect -o, join, and split preserve existing outputs and choose\n");
     printf("  collision-safe names. derive target paths are semantic and are never replaced\n");
     printf("  by random collision names. split confines output below its safety root and\n");
     printf("  rejects lexical or symlink-parent escapes. POSIX newly created outputs use\n");
@@ -4432,6 +5023,7 @@ static void cm_print_help(const char *argv0)
     printf("  %s generate sha256 -t sha256:openssl /data/releases/image.iso\n", program);
     printf("  %s derive sha256,sha512 -F md5,sha1 -r /data/releases\n", program);
     printf("  %s format sha256 -r -d \" *\" -n windows -s slash -b /data/releases\n", program);
+    printf("  %s inspect all -r -m multiple -o /tmp/inspect-report.txt /data/releases\n", program);
     printf("  %s join sha256 -r -L -o /tmp/joined.sha256 /data/releases\n", program);
     printf("  %s split sha256 -o /tmp/split /tmp/joined.sha256\n", program);
     printf("  %s remove md5,sha256 -r /data/releases\n", program);
@@ -4575,7 +5167,7 @@ static void cm_random_hex(char out[9])
 static int cm_reserve_exclusive(const char *path)
 {
 #ifdef _WIN32
-    wchar_t *w = cm_utf8_to_wide(path);
+    wchar_t *w = cm_windows_path_to_wide(path);
     HANDLE h;
     DWORD error = ERROR_SUCCESS;
 
@@ -4972,6 +5564,35 @@ static int cm_read_records(const char *manifest, const char *algo, CmRecordVec *
     return 1;
 }
 
+static int cm_count_manifest_records(const char *manifest, const char *algo, int *valid_count)
+{
+    CmStrVec lines = {0};
+    size_t i;
+    int count = 0;
+
+    if(cm_read_lines(manifest, &lines, NULL) != 0)
+    {
+        cm_sv_free(&lines);
+        return 0;
+    }
+
+    for(i = 0; i < lines.n; i++)
+    {
+        CmRecord record;
+
+        if(cm_parse_manifest_line(algo, lines.v[i], &record))
+        {
+            count++;
+            cm_record_free(&record);
+        }
+    }
+
+    cm_sv_free(&lines);
+    *valid_count = count;
+
+    return 1;
+}
+
 static char *cm_default_output_name(const char *algo)
 {
     CmBuf b;
@@ -5014,7 +5635,7 @@ static char *cm_report_path(const char *target, const char *base, const char *mo
     char *rel = cm_relative_path(base, target), *out = cm_render_native_path(rel, mode, source), *result;
 
     free(rel);
-    if(strcmp(out, ".") == 0 || strcmp(out, "..") == 0 || strncmp(out, "../", 3) == 0 || strncmp(out, "..\\", 3) == 0)
+    if(strcmp(out, ".") == 0 || cm_path_is_abs(out) || strcmp(out, "..") == 0 || strncmp(out, "../", 3) == 0 || strncmp(out, "..\\", 3) == 0)
         return out;
     {
         CmBuf b;
@@ -5212,7 +5833,7 @@ static int cm_hash_path_is_stdout_file(const char *path)
 
     if(stdout_handle == INVALID_HANDLE_VALUE || GetFileType(stdout_handle) != FILE_TYPE_DISK || !GetFileInformationByHandle(stdout_handle, &stdout_info))
         return 0;
-    wide_path = cm_utf8_to_wide(path);
+    wide_path = cm_windows_path_to_wide(path);
     if(!wide_path)
         return 0;
     path_handle = CreateFileW(wide_path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -5950,10 +6571,10 @@ static int cm_reporter_close(CmReporter *r)
     return ok;
 }
 
-static void cm_reporter_status(CmReporter *r, const char *label, const char *path)
+static void cm_reporter_status_width(CmReporter *r, const char *label, const char *path, int width)
 {
     CmBuf b;
-    int spaces = 8 - (int)strlen(label);
+    int spaces = width - (int)strlen(label);
     char *safe = cm_sanitize_report_text(cm_terminal_path_view(path));
 
     if(spaces < 1)
@@ -5972,6 +6593,16 @@ static void cm_reporter_status(CmReporter *r, const char *label, const char *pat
         cm_reporter_line(r, s);
         free(s);
     }
+}
+
+static void cm_reporter_status(CmReporter *r, const char *label, const char *path)
+{
+    cm_reporter_status_width(r, label, path, 8);
+}
+
+static void cm_reporter_inspect_status(CmReporter *r, const char *label, const char *path)
+{
+    cm_reporter_status_width(r, label, path, 9);
 }
 
 static int cm_mode_check(const CmOptions *o)
@@ -7851,6 +8482,265 @@ static int cm_mode_format(const CmOptions *o)
     return errors ? 1 : 0;
 }
 
+/* -------------------------------- inspect --------------------------------- */
+
+static int cm_inspect_match(const char *match_mode, const char *status)
+{
+    return strcmp(match_mode, "all") == 0 || strcmp(match_mode, status) == 0;
+}
+
+static int cm_mode_inspect(const CmOptions *o)
+{
+    CmManifestVec manifests = {0};
+    CmCountMap entry_counts = {0};
+    CmStrVec present = {0};
+    size_t i, j;
+    int errors = 0, manifest_count = 0, entries = 0, single = 0, multiple = 0, empty = 0, unread = 0;
+    char *base;
+    CmReporter rep;
+    char *report_path = NULL;
+
+    if(o->check_paths.n > 1)
+    {
+        CmStrVec seen = {0};
+
+        g_scan_errors = 0;
+        for(i = 0; i < o->check_paths.n; i++)
+        {
+            char *absolute = cm_path_normalize(o->check_paths.v[i]);
+            const char *algo;
+
+            if(cm_sv_contains(&seen, absolute))
+            {
+                free(absolute);
+                continue;
+            }
+            cm_sv_push(&seen, absolute);
+            algo = o->algorithms.n == 1 ? o->algorithms.v[0] : cm_detect_algorithm(absolute, &o->algorithms);
+            if(algo)
+                cm_mv_push(&manifests, absolute, algo);
+            free(absolute);
+        }
+        cm_sv_free(&seen);
+    }
+    else
+    {
+        if(o->algorithms.n == 1 && cm_is_file(o->check_paths.v[0]))
+            cm_mv_push(&manifests, o->check_paths.v[0], o->algorithms.v[0]);
+        else
+            cm_collect_manifests(o->check_paths.v[0], o->recursive, &o->algorithms, o->natural_sort, &manifests);
+    }
+    errors += g_scan_errors;
+    if(!manifests.n)
+    {
+        fprintf(stderr, "Error: no selected checksum manifest files found in: %s\n", cm_terminal_path_view(o->path));
+        cm_mv_free(&manifests);
+        return 1;
+    }
+
+    for(i = 0; i < o->algorithms.n; i++)
+        for(j = 0; j < manifests.n; j++)
+            if(strcmp(o->algorithms.v[i], manifests.v[j].algo) == 0)
+            {
+                cm_sv_push(&present, o->algorithms.v[i]);
+                break;
+            }
+
+    if(o->output)
+    {
+        if(cm_is_dir(o->output))
+        {
+            fprintf(stderr, "Error: inspect --output must name a file, not a directory.\n");
+            cm_mv_free(&manifests);
+            cm_sv_free(&present);
+            return 2;
+        }
+        report_path = cm_reserve_collision(o->output, "", 0, 1, 1);
+        if(!report_path)
+        {
+            fprintf(stderr, "Error: cannot reserve report output: %s\n", cm_terminal_path_view(o->output));
+            cm_mv_free(&manifests);
+            cm_sv_free(&present);
+            return 2;
+        }
+    }
+
+    if(!cm_reporter_open(&rep, report_path, o->newline_mode))
+    {
+        fprintf(stderr, "Error: cannot open report output.\n");
+        if(report_path)
+        {
+            cm_unlink(report_path);
+            cm_registry_remove(&g_reserved_paths, report_path);
+        }
+        free(report_path);
+        cm_mv_free(&manifests);
+        cm_sv_free(&present);
+        return 2;
+    }
+
+    base = o->check_paths.n > 1 ? cm_getcwd_utf8() : cm_report_base(o->path);
+    for(i = 0; i < manifests.n; i++)
+    {
+        int manifest_entries = 0;
+        char *relative, *display;
+        CmBuf display_buffer;
+
+        if(g_interrupted)
+            break;
+        manifest_count++;
+        relative = cm_report_path(manifests.v[i].path, base, "slash", manifests.v[i].path);
+        cm_buf_init(&display_buffer);
+        cm_buf_append(&display_buffer, relative);
+        cm_buf_append(&display_buffer, " [");
+        cm_buf_append(&display_buffer, manifests.v[i].algo);
+        cm_buf_putc(&display_buffer, ']');
+        display = cm_buf_take(&display_buffer);
+        free(relative);
+
+        if(!cm_count_manifest_records(manifests.v[i].path, manifests.v[i].algo, &manifest_entries))
+        {
+            unread++;
+            if(cm_inspect_match(o->match_mode, "unread"))
+                cm_reporter_inspect_status(&rep, "UNREAD", display);
+            free(display);
+            continue;
+        }
+
+        entries += manifest_entries;
+        cm_count_add(&entry_counts, manifests.v[i].algo, manifest_entries);
+        if(manifest_entries == 0)
+        {
+            empty++;
+            if(cm_inspect_match(o->match_mode, "empty"))
+            {
+                CmBuf line;
+                char *text;
+
+                cm_buf_init(&line);
+                cm_buf_append(&line, display);
+                cm_buf_append(&line, " (0 entries)");
+                text = cm_buf_take(&line);
+                cm_reporter_inspect_status(&rep, "EMPTY", text);
+                free(text);
+            }
+        }
+        else if(manifest_entries == 1)
+        {
+            single++;
+            if(cm_inspect_match(o->match_mode, "single"))
+            {
+                CmBuf line;
+                char *text;
+
+                cm_buf_init(&line);
+                cm_buf_append(&line, display);
+                cm_buf_append(&line, " (1 entry)");
+                text = cm_buf_take(&line);
+                cm_reporter_inspect_status(&rep, "SINGLE", text);
+                free(text);
+            }
+        }
+        else
+        {
+            multiple++;
+            if(cm_inspect_match(o->match_mode, "multiple"))
+            {
+                CmBuf line;
+                char count_text[64];
+                char *text;
+
+                snprintf(count_text, sizeof(count_text), " (%d entries)", manifest_entries);
+                cm_buf_init(&line);
+                cm_buf_append(&line, display);
+                cm_buf_append(&line, count_text);
+                text = cm_buf_take(&line);
+                cm_reporter_inspect_status(&rep, "MULTIPLE", text);
+                free(text);
+            }
+        }
+        free(display);
+    }
+
+    if(g_interrupted)
+    {
+        cm_reporter_close(&rep);
+        if(report_path)
+        {
+            cm_unlink(report_path);
+            cm_registry_remove(&g_reserved_paths, report_path);
+        }
+        free(report_path);
+        free(base);
+        cm_mv_free(&manifests);
+        cm_sv_free(&present);
+        cm_count_free(&entry_counts);
+        return 1;
+    }
+
+    cm_reporter_line(&rep, "");
+    cm_reporter_line(&rep, "Entries:");
+    {
+        char line[256];
+        size_t width = cm_entry_label_width(&present);
+
+        for(i = 0; i < present.n; i++)
+        {
+            snprintf(line, sizeof(line), "  %-*s: %d", (int)width, present.v[i], cm_count_get(&entry_counts, present.v[i]));
+            cm_reporter_line(&rep, line);
+        }
+        snprintf(line, sizeof(line), "  %-*s: %d", (int)width, "Total", entries);
+        cm_reporter_line(&rep, line);
+    }
+
+    cm_reporter_line(&rep, "");
+    cm_reporter_line(&rep, "Summary:");
+    {
+        char line[128];
+
+        snprintf(line, sizeof(line), "  Manifests: %d", manifest_count);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Entries  : %d", entries);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Single   : %d", single);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Multiple : %d", multiple);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Empty    : %d", empty);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Unread   : %d", unread);
+        cm_reporter_line(&rep, line);
+        snprintf(line, sizeof(line), "  Errors   : %d", errors);
+        cm_reporter_line(&rep, line);
+    }
+
+    cm_reporter_line(&rep, "");
+    cm_reporter_line(&rep, "Operation complete.");
+    if(!cm_reporter_close(&rep))
+    {
+        fprintf(stderr, "Error: failed to write inspect report output.\n");
+        errors++;
+        if(report_path)
+        {
+            cm_unlink(report_path);
+            cm_registry_remove(&g_reserved_paths, report_path);
+        }
+    }
+    else if(report_path)
+    {
+        cm_registry_remove(&g_reserved_paths, report_path);
+        cm_print_output_path(report_path, NULL);
+    }
+
+    free(report_path);
+    free(base);
+    cm_mv_free(&manifests);
+    cm_sv_free(&present);
+    cm_count_free(&entry_counts);
+
+    return (unread || errors) ? 1 : 0;
+}
+
 /* --------------------------------- join ----------------------------------- */
 
 static int cm_mode_join(const CmOptions *o)
@@ -8471,6 +9361,7 @@ static void cm_options_init(CmOptions *o)
     o->filter_pattern = cm_xstrdup("*");
     o->filter_case = cm_xstrdup("sensitive");
     o->layout = cm_xstrdup("separate");
+    o->match_mode = cm_xstrdup("all");
 }
 
 static void cm_options_free(CmOptions *o)
@@ -8487,6 +9378,7 @@ static void cm_options_free(CmOptions *o)
     free(o->filter_pattern);
     free(o->filter_case);
     free(o->layout);
+    free(o->match_mode);
     free(o->tools_raw);
     cm_pov_free(&o->tools);
     memset(o, 0, sizeof(*o));
@@ -8551,6 +9443,13 @@ static int cm_mode_name(const char *raw, char **out)
         return 1;
     }
 
+    if(strcmp(m, "inspect") == 0 || strcmp(m, "i") == 0)
+    {
+        free(m);
+        *out = cm_xstrdup("inspect");
+        return 1;
+    }
+
     if(strcmp(m, "join") == 0 || strcmp(m, "j") == 0)
     {
         free(m);
@@ -8593,7 +9492,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
     *immediate = -1;
     if(argc < 2)
     {
-        *immediate = cm_usage_error(program, "a mode is required: check, hash, generate, derive, format, join, split, or remove");
+        *immediate = cm_usage_error(program, "a mode is required: check, hash, generate, derive, format, inspect, join, split, or remove");
         return 0;
     }
 
@@ -8613,7 +9512,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
 
     if(!cm_mode_name(argv[1], &o->mode))
     {
-        *immediate = cm_usage_error(program, "first argument must be a mode: check, hash, generate, derive, format, join, split, or remove");
+        *immediate = cm_usage_error(program, "first argument must be a mode: check, hash, generate, derive, format, inspect, join, split, or remove");
         return 0;
     }
 
@@ -8638,7 +9537,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
     }
 
     {
-        int transform = strcmp(o->mode, "format") == 0 || strcmp(o->mode, "join") == 0 || strcmp(o->mode, "remove") == 0 || strcmp(o->mode, "split") == 0;
+        int transform = strcmp(o->mode, "format") == 0 || strcmp(o->mode, "inspect") == 0 || strcmp(o->mode, "join") == 0 || strcmp(o->mode, "remove") == 0 || strcmp(o->mode, "split") == 0;
 
         if(!cm_parse_selector(argv[2], transform, 0, &o->algorithms))
         {
@@ -8712,7 +9611,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
             strcmp(a, "-n") == 0 || strcmp(a, "--newline") == 0 || strcmp(a, "-s") == 0 || strcmp(a, "--path-separator") == 0 ||
             strcmp(a, "-t") == 0 || strcmp(a, "--tools") == 0 || strcmp(a, "-F") == 0 || strcmp(a, "--from") == 0 ||
             strcmp(a, "-f") == 0 || strcmp(a, "--filter") == 0 || strcmp(a, "-C") == 0 || strcmp(a, "--filter-case") == 0 ||
-            strcmp(a, "-l") == 0 || strcmp(a, "--layout") == 0)
+            strcmp(a, "-l") == 0 || strcmp(a, "--layout") == 0 || strcmp(a, "-m") == 0 || strcmp(a, "--match") == 0)
         {
             const char *v;
 
@@ -8765,6 +9664,11 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
                 free(filter_case_raw);
                 filter_case_raw = cm_xstrdup(v);
                 o->filter_case_explicit = 1;
+            }
+            else if(strcmp(a, "-m") == 0 || strcmp(a, "--match") == 0)
+            {
+                cm_replace_string(&o->match_mode, v);
+                o->match_explicit = 1;
             }
             else
             {
@@ -8822,6 +9726,12 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
             o->layout_explicit = 1;
             free(eq);
         }
+        else if((eq = cm_opt_value_eq(a, "--match")) != NULL)
+        {
+            cm_replace_string(&o->match_mode, eq);
+            o->match_explicit = 1;
+            free(eq);
+        }
         else if(a[0] == '-')
         {
             char msg[256];
@@ -8839,7 +9749,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         }
     }
 
-    if(strcmp(o->mode, "check") == 0)
+    if(strcmp(o->mode, "check") == 0 || strcmp(o->mode, "inspect") == 0)
     {
         if(!positional.n)
         {
@@ -8875,6 +9785,12 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
     if(o->output && !*o->output)
     {
         *immediate = cm_usage_error(program, "--output must not be empty");
+        goto fail;
+    }
+
+    if(strcmp(o->mode, "inspect") == 0 && (o->delimiter || o->path_separator_explicit))
+    {
+        *immediate = cm_usage_error(program, "--delimiter and --path-separator are not valid with inspect");
         goto fail;
     }
 
@@ -8951,6 +9867,28 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         goto fail;
     }
 
+    {
+        char *match = cm_xstrdup(o->match_mode);
+
+        cm_ascii_lower_inplace(match);
+        if(strcmp(match, "all") && strcmp(match, "single") && strcmp(match, "multiple") && strcmp(match, "empty"))
+        {
+            char msg[512];
+
+            snprintf(msg, sizeof(msg), "invalid --match mode: %s", match);
+            free(match);
+            *immediate = cm_usage_error(program, msg);
+            goto fail;
+        }
+        cm_replace_string(&o->match_mode, match);
+        free(match);
+    }
+    if(strcmp(o->mode, "inspect") != 0 && o->match_explicit)
+    {
+        *immediate = cm_usage_error(program, "--match is only valid with inspect");
+        goto fail;
+    }
+
     if(strcmp(o->mode, "generate") == 0 || strcmp(o->mode, "hash") == 0)
     {
         if(o->filter_case_explicit && !o->filter_explicit)
@@ -9013,7 +9951,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
             goto fail;
         }
     }
-    else if(strcmp(o->mode, "join") == 0 || strcmp(o->mode, "derive") == 0)
+    else if(strcmp(o->mode, "derive") == 0 || strcmp(o->mode, "inspect") == 0 || strcmp(o->mode, "join") == 0)
     {
         if(o->natural_sort && o->lexicographic_sort)
         {
@@ -9035,7 +9973,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         }
         if(o->natural_sort || o->lexicographic_sort)
         {
-            *immediate = cm_usage_error(program, "--natural-sort and --lexicographic-sort are only valid with hash/generate/join/derive");
+            *immediate = cm_usage_error(program, "--natural-sort and --lexicographic-sort are only valid with hash/generate/derive/inspect/join");
             goto fail;
         }
     }
@@ -9122,24 +10060,28 @@ int main(int argc, char **argv)
     {
         rc = cm_mode_split(&o);
     }
-    else if(strcmp(o.mode, "check") == 0 && o.check_paths.n > 1)
+    else if((strcmp(o.mode, "check") == 0 || strcmp(o.mode, "inspect") == 0) && o.check_paths.n > 1)
     {
         size_t i;
 
         for(i = 0; i < o.check_paths.n; i++)
             if(!cm_is_file(o.check_paths.v[i]))
             {
-                fprintf(stderr, "Error: multiple check inputs must all be regular checksum files: %s\n", cm_terminal_path_view(o.check_paths.v[i]));
+                fprintf(stderr, "Error: multiple %s inputs must all be regular checksum files: %s\n", o.mode, cm_terminal_path_view(o.check_paths.v[i]));
                 rc = 2;
                 break;
             }
         if(!rc)
-            rc = cm_mode_check(&o);
+            rc = strcmp(o.mode, "inspect") == 0 ? cm_mode_inspect(&o) : cm_mode_check(&o);
     }
     else if(!cm_is_file(o.path) && !cm_is_dir(o.path))
     {
         fprintf(stderr, "Error: path does not exist or is not a regular file/directory: %s\n", cm_terminal_path_view(o.path));
         rc = 2;
+    }
+    else if(strcmp(o.mode, "check") == 0)
+    {
+        rc = cm_mode_check(&o);
     }
     else if(strcmp(o.mode, "hash") == 0)
     {
@@ -9157,6 +10099,10 @@ int main(int argc, char **argv)
     {
         rc = cm_mode_format(&o);
     }
+    else if(strcmp(o.mode, "inspect") == 0)
+    {
+        rc = cm_mode_inspect(&o);
+    }
     else if(strcmp(o.mode, "join") == 0)
     {
         rc = cm_mode_join(&o);
@@ -9164,10 +10110,6 @@ int main(int argc, char **argv)
     else if(strcmp(o.mode, "remove") == 0)
     {
         rc = cm_mode_remove(&o);
-    }
-    else if(strcmp(o.mode, "check") == 0)
-    {
-        rc = cm_mode_check(&o);
     }
     else
     {

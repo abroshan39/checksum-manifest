@@ -1,6 +1,6 @@
 # Checksum Manifest Utility — C
 
-`checksum-manifest` is a standalone C99 command-line utility for hashing files directly and for generating, verifying, deriving, reformatting, joining, splitting, and removing checksum manifests.
+`checksum-manifest` is a standalone C99 command-line utility for hashing files directly and for generating, verifying, deriving, reformatting, inspecting, joining, splitting, and removing checksum manifests.
 
 All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRHash. The program does not invoke external checksum executables.
 
@@ -18,6 +18,7 @@ All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRH
   - [generate](#generate)
   - [derive](#derive)
   - [format](#format)
+  - [inspect](#inspect)
   - [join](#join)
   - [split](#split)
   - [remove](#remove)
@@ -34,6 +35,7 @@ All hashing is performed in-process through OpenSSL Crypto, Libgcrypt, and LibRH
   - [generate output](#generate-output)
   - [derive output](#derive-output)
   - [format behavior](#format-behavior)
+  - [inspect output](#inspect-output)
   - [join output](#join-output)
   - [split output](#split-output)
   - [remove behavior](#remove-behavior)
@@ -248,6 +250,8 @@ checksum-manifest derive ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
 checksum-manifest d ALGORITHMS --from SOURCE_ALGORITHMS [OPTIONS] PATH
 checksum-manifest format ALGORITHMS [OPTIONS] PATH
 checksum-manifest f ALGORITHMS [OPTIONS] PATH
+checksum-manifest inspect ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
+checksum-manifest i ALGORITHMS [OPTIONS] PATH_OR_CHECKSUM_FILE [CHECKSUM_FILE ...]
 checksum-manifest join ALGORITHMS [OPTIONS] PATH
 checksum-manifest j ALGORITHMS [OPTIONS] PATH
 checksum-manifest split ALGORITHM [OPTIONS] CHECKSUM_FILE
@@ -257,7 +261,7 @@ checksum-manifest r ALGORITHMS [OPTIONS] PATH
 checksum-manifest (-h | --help | -v | --version)
 ```
 
-The first argument is the mode. `c`, `h`, `g`, `d`, `f`, `j`, `s`, and `r` are aliases for `check`, `hash`, `generate`, `derive`, `format`, `join`, `split`, and `remove`.
+The first argument is the mode. `c`, `h`, `g`, `d`, `f`, `i`, `j`, `s`, and `r` are aliases for `check`, `hash`, `generate`, `derive`, `format`, `inspect`, `join`, `split`, and `remove`.
 
 Long options that take a value accept both `--option VALUE` and `--option=VALUE`. Use `--` to end option parsing before a positional path that begins with `-`.
 
@@ -267,6 +271,7 @@ Long options that take a value accept both `--option VALUE` and `--option=VALUE`
 -F, --from ALGORITHMS
 -d, --delimiter VALUE
 -n, --newline MODE
+-m, --match MODE             inspect only: all|single|multiple|empty
 -s, --path-separator MODE
 -t, --tools SPEC
 -f, --filter PATTERN
@@ -283,15 +288,17 @@ Long options that take a value accept both `--option VALUE` and `--option=VALUE`
 
 Option applicability:
 
-- `--recursive`: `check`, `hash`, `generate`, `derive`, `format`, `join`, `remove`; invalid with `split`.
-- `--output`: `check`, `hash`, `generate`, `derive`, `join`, `split`; invalid with `format` and `remove`.
+- `--recursive`: `check`, `hash`, `generate`, `derive`, `format`, `inspect`, `join`, `remove`; invalid with `split`.
+- `--output`: `check`, `hash`, `generate`, `derive`, `inspect`, `join`, `split`; invalid with `format` and `remove`.
 - `--from`: required by `derive`; invalid in every other mode.
-- `--delimiter`, `--newline`, `--path-separator`: every mode except `remove`.
+- `--newline`: every mode except `remove`; for `inspect` it controls the report newline.
+- `--delimiter`, `--path-separator`: invalid with `inspect` and `remove`; other modes retain their existing behavior.
+- `--match`: `inspect` only; values are `all`, `single`, `multiple`, or `empty` (default `all`).
 - `--tools`: `check`, `hash`, `generate`, `derive` only.
 - `--filter`, `--filter-case`: `hash` and `generate` only. `--filter-case` requires explicit `--filter`.
 - `--digest-only`: `hash` only.
 - `--layout`: `generate` only.
-- `--natural-sort`, `--lexicographic-sort`: `hash`, `generate`, `join`, `derive`; for `generate`, `--layout single` is required. The two sort options are mutually exclusive.
+- `--natural-sort`, `--lexicographic-sort`: `hash`, `generate`, `derive`, `inspect`, `join`; for `generate`, `--layout single` is required. In `inspect`, ordering is applied inside each directory during traversal, not globally. The two sort options are mutually exclusive.
 - `--update-timestamp`: `derive`, `format`, `remove` only.
 - `--backup`: `format` only.
 
@@ -307,7 +314,7 @@ checksum-manifest check md5 /data/set1.md5 /data/set2.md5
 checksum-manifest c md5,sha256 -r /data
 ```
 
-`check` accepts one directory, one explicit manifest file, or multiple explicit manifest files. When exactly one algorithm is selected, every explicit file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or `all`, every explicit file must have a case-insensitive filename extension matching one of the selected algorithms so the algorithm can be determined unambiguously. Directory discovery always remains extension-based. When multiple inputs are supplied, every input must be a regular file; mixed file/directory input and multiple directories are rejected. Duplicate explicit file paths resolve to one verification pass. `--recursive` applies when the single input is a directory.
+`check` accepts one directory, one explicit manifest file, or multiple explicit manifest files. When exactly one algorithm is selected, every explicit file is parsed as that algorithm regardless of its filename extension. With multiple algorithms or `all`, every explicit file must have a case-insensitive filename extension matching one of the selected algorithms so the algorithm can be determined unambiguously. Directory discovery always remains extension-based. When multiple inputs are supplied, every input must be a regular file; mixed file/directory input and multiple directories are rejected. Duplicate explicit file paths resolve to one verification pass. `inspect` uses the same explicit-file and directory-discovery rules, but it only parses the selected manifests and never follows their Entry paths. `--recursive` applies when the single input is a directory.
 
 For each selected algorithm that has at least one discovered manifest, one native provider is selected before verification starts and is used for the whole run. A provider failure during hashing is reported as `ERROR`; provider selection is not changed mid-run.
 
@@ -338,7 +345,7 @@ CRC32/CRC32C keep their normal filename-first record grammar after the tag. With
 
 Digest-only output remains file-major and follows selector order. `--delimiter` and `--path-separator` are accepted but do not affect digest-only output. Without `--digest-only`, output paths are relative to the input root: a file input uses its basename, while directory input preserves paths below that directory. `--path-separator` controls rendering.
 
-`hash` prints no `Tools:`, `Entries:`, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. `-o/--output` writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different `-o` pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or `-o` output ends with a newline. Early downstream pipe closure is treated as normal successful termination.
+`hash` prints no `Tools`, `Entries`, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. `-o/--output` writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different `-o` pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or `-o` output ends with a newline. Early downstream pipe closure is treated as normal successful termination.
 
 The supported options are `-r/--recursive`, `-o/--output`, `-d/--delimiter`, `-n/--newline`, `-s/--path-separator`, `-t/--tools`, `-f/--filter`, `-C/--filter-case`, `-D/--digest-only`, `-N/--natural-sort`, and `-L/--lexicographic-sort`. Their defaults match `generate` where applicable: filter `*`, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.
 
@@ -404,6 +411,21 @@ With `-b/--backup`, a collision-safe `.cmbak` backup is created before the manif
 
 Without `-T`, manifest, backup, and scanned-directory modification times are preserved best-effort. `-T` leaves timestamp changes to normal filesystem behavior.
 
+### inspect
+
+`inspect` reports how many recognized checksum Entries each selected manifest contains. It uses the same explicit-file and directory-discovery rules as `check`, but it does not read or hash the files named by Entries.
+
+```bash
+checksum-manifest inspect sha256 /data/releases/checksums.sha256
+checksum-manifest i all -r -m multiple -o /tmp/inspect-report.txt /data/releases
+```
+
+Selectors follow the transform-style rules used by `format`, `join`, `remove`, and `split`: built-in names, `sfv` as the CRC32 alias, custom extension names, and standalone `all` are accepted.
+
+Each selected manifest is classified as `SINGLE`, `MULTIPLE`, `EMPTY`, or `UNREAD`. `-m/--match` accepts `all`, `single`, `multiple`, or `empty` and filters only per-manifest status lines; `Entries` and `Summary` always describe the complete inspection. `-N` and `-L` sort discovery inside each directory during depth-first traversal. Displayed and report paths always use slash separators.
+
+`inspect` accepts `--recursive`, `--output`, `--newline`, `--match`, `--natural-sort`, and `--lexicographic-sort`.
+
 ### join
 
 `join` combines valid entries from selected manifests into one output per algorithm.
@@ -453,7 +475,7 @@ sha3-224, sha3-256, sha3-384, sha3-512
 
 `check`, `hash`, `generate`, and the target selector of `derive` require built-in hashing algorithms.
 
-`format`, `join`, `split`, `remove`, and `derive -F/--from` also accept explicit custom algorithm/extension names matching:
+`format`, `inspect`, `join`, `split`, `remove`, and `derive -F/--from` also accept explicit custom algorithm/extension names matching:
 
 ```text
 [A-Za-z0-9][A-Za-z0-9._+-]*
@@ -461,7 +483,7 @@ sha3-224, sha3-256, sha3-384, sha3-512
 
 Matching is case-insensitive using ASCII folding.
 
-`all` is a standalone case-insensitive keyword and cannot be combined with other comma-separated names. For built-in target selection it expands to the full built-in list. For transform/reference selectors it expands to the same built-in extension list; it does not discover arbitrary unknown extensions. `split` requires exactly one selector and rejects `all`.
+`all` is a standalone case-insensitive keyword and cannot be combined with other comma-separated names. For built-in target selection it expands to the full built-in list. For inspect/transform/reference selectors it expands to the same built-in extension list; it does not discover arbitrary unknown extensions. `split` requires exactly one selector and rejects `all`.
 
 `sfv` is a reserved case-insensitive alias for `crc32`. CRC32 uses `.sfv`; CRC32C uses `.crc32c`; every other built-in algorithm uses `.<algorithm>`.
 
@@ -517,7 +539,7 @@ Generated manifests and `hash -o` output files are ordinary files on later scans
 
 ## Entry grammar
 
-`check`, `derive`, `format`, `join`, and `split` share the same parser.
+`check`, `derive`, `format`, `inspect`, `join`, and `split` share the same parser.
 
 For non-CRC algorithms the recognized form is conceptually:
 
@@ -547,7 +569,7 @@ Because whitespace is the field separator, a CRC filename ending in a space or t
 
 Digest characters must be hexadecimal, but digest length is intentionally not validated by the parser.
 
-Blank lines and unescaped lines beginning with `#` or `;` are ignored. `check`, `derive`, `join`, and `split` skip unrecognized lines and NUL-containing lines. `format` refuses to rewrite a manifest containing NUL but preserves other non-entry text.
+Blank lines and unescaped lines beginning with `#` or `;` are ignored. `check`, `derive`, `inspect`, `join`, and `split` skip unrecognized lines and NUL-containing lines. `format` refuses to rewrite a manifest containing NUL but preserves other non-entry text.
 
 Escaped records decode these filename sequences:
 
@@ -590,9 +612,9 @@ For CRC32/CRC32C the option is accepted but ignored; CRC output uses its filenam
 - `UNREAD`: target is missing, not a regular file, or not readable.
 - `ERROR`: another verification/hash/provider error occurred.
 
-Each checked-file result ends with the normalized lowercase algorithm in brackets. `Entries:` counts parsed entries by algorithm, including failed checks; manifest-level errors are not entry counts.
+Each checked-file result ends with the normalized lowercase algorithm in brackets. `Entries` counts parsed entries by algorithm, including failed checks; manifest-level errors are not entry counts.
 
-`Tools:` reports the native provider selected for each algorithm that actually required hashing.
+`Tools` reports the native provider selected for each algorithm that actually required hashing.
 
 ## Native hash providers
 
@@ -633,11 +655,11 @@ rhash
 
 A pinned algorithm does not fall back. Unlisted algorithms use automatic provider selection. A pin that is structurally impossible according to the central algorithm registry is rejected during command-line validation.
 
-`format`, `join`, `split`, and `remove` do not hash file contents and do not require runtime provider selection. `derive` requires providers only for target manifests that are missing and must actually be created.
+`format`, `inspect`, `join`, `split`, and `remove` do not hash file contents and do not require runtime provider selection. `inspect` reads only selected manifest files and never resolves their entry targets. `derive` requires providers only for target manifests that are missing and must actually be created.
 
 ## Output behavior
 
-On POSIX, files newly created by `check -o`, `hash -o`, `generate`, `derive`, `join`, and `split` are normalized to mode `0644`. Hash output redirected by the shell to a regular stdout file (for example `> hashes.txt`) is also normalized to mode `0644`; pipes are not chmodded. `format` preserves existing manifest permission bits and `.cmbak` backups preserve source permissions. Other metadata such as inode identity, ownership, ACLs, extended attributes, security labels, capabilities, and hard-link topology is not guaranteed when a manifest is atomically replaced.
+On POSIX, files newly created by `check -o`, `hash -o`, `generate`, `derive`, `inspect -o`, `join`, and `split` are normalized to mode `0644`. Hash output redirected by the shell to a regular stdout file (for example `> hashes.txt`) is also normalized to mode `0644`; pipes are not chmodded. `format` preserves existing manifest permission bits and `.cmbak` backups preserve source permissions. Other metadata such as inode identity, ownership, ACLs, extended attributes, security labels, capabilities, and hard-link topology is not guaranteed when a manifest is atomically replaced.
 
 ### check output
 
@@ -645,7 +667,7 @@ On POSIX, files newly created by `check -o`, `hash -o`, `generate`, `derive`, `j
 checksum-manifest check sha256 -o report.txt /data
 ```
 
-The report contains verification lines, `Tools:`, per-algorithm `Entries:`, and `Summary:`. The terminal reports the actual collision-safe report path.
+The report contains verification lines, `Tools`, per-algorithm `Entries`, and `Summary`. The terminal reports the actual collision-safe report path.
 
 With multiple explicit manifest inputs, displayed target paths are based on the current working directory; file resolution itself remains relative to each individual manifest directory.
 
@@ -659,7 +681,7 @@ With one algorithm the stream is standard manifest grammar. With multiple algori
 
 ### generate output
 
-`Entries:` lists per-algorithm counts and a total.
+`Entries` lists per-algorithm counts and a total.
 
 With default `separate` layout and no `-o`, one manifest is created beside each source file for each selected algorithm. A collision preserves the existing file and adds an eight-character hexadecimal suffix before the checksum extension:
 
@@ -704,6 +726,10 @@ Without `-T`, modification times of manifests, backups, and scanned directories 
 
 With `-b`, `.cmbak` is created before rewrite. Collision-safe naming preserves an existing backup.
 
+### inspect output
+
+Per-manifest lines use the `SINGLE`, `MULTIPLE`, `EMPTY`, and `UNREAD` labels. `Entries` reports recognized Entries by selected extension/algorithm plus `Total`, and `Summary` reports `Manifests`, `Entries`, `Single`, `Multiple`, `Empty`, `Unread`, and `Errors`. Both sections always cover the complete inspection, regardless of `--match`.
+
 ### join output
 
 Without `-o`, joined outputs are placed in `PATH` when it is a directory, or beside `PATH` when `PATH` is a manifest file.
@@ -735,7 +761,7 @@ Collisions preserve existing output files and insert an eight-character hexadeci
 
 ### Collision handling
 
-Existing output files are never silently overwritten by `check -o`, `generate`, `join`, or `split`.
+Existing output files are never silently overwritten by `check -o`, `hash -o`, `generate`, `inspect -o`, `join`, or `split`.
 
 Report example:
 
@@ -773,7 +799,7 @@ checksum-92AF01CC.sfv
 
 Default: `unix` / LF.
 
-Input manifests can contain LF, CRLF, or CR. The option controls newly written reports/manifests and `format` output.
+Input manifests can contain LF, CRLF, or CR. The option controls newly written reports/manifests, including `check` reports, `format` output, and `inspect` reports.
 
 ## Path separators
 
@@ -788,6 +814,8 @@ system
 
 Default: `slash`.
 
+`inspect` does not accept `--path-separator`. Its displayed/report manifest paths always use `/`, while entry filenames are parsed only to determine whether a record is a recognized Entry and are never resolved as filesystem paths.
+
 Mode-dependent meaning:
 
 - `generate`: controls separator style written into generated relative entry paths.
@@ -799,7 +827,7 @@ On systems where a literal backslash is legal inside a filename, forced separato
 
 ## Absolute paths
 
-Absolute manifest entry paths are accepted by `check`, `derive`, `format`, and `join`.
+Absolute manifest entry paths are accepted by `check`, `derive`, `format`, and `join`. `inspect` does not interpret manifest entry paths; relative and absolute filenames count equally when their records are recognized by the parser.
 
 `split` accepts an absolute entry only with `-o`, where it is re-rooted safely below the output directory. Without `-o`, absolute and escaping parent-relative entries are rejected.
 
@@ -811,7 +839,7 @@ Generated `generate` records are normally relative to their manifest location.
 
 On POSIX, path handling is byte-oriented so filenames containing bytes that are not valid UTF-8 can still be scanned, hashed, represented, and round-tripped where the manifest format permits.
 
-On Windows, command-line and filesystem operations use wide Win32 paths internally and convert UTF-16 to/from UTF-8 for the program's internal textual representation.
+On Windows, long filesystem paths beyond the legacy `MAX_PATH` limit are supported.
 
 The portable hash/generate filter operates on filename bytes. `?` matches one filesystem byte, not one Unicode code point. Literal non-ASCII filter text is matched using its encoded bytes; Unicode case folding is not performed.
 
@@ -836,6 +864,8 @@ Typical statuses:
 - `128 + signal`: interrupted by `SIGINT` or `SIGTERM`.
 
 For `derive`, status `1` also covers missing occurrence coverage in an existing target, unreadable/unhashable source data during target creation, and ambiguous target case variants. Timestamp-preservation warnings alone do not change the exit status.
+
+For `inspect`, `SINGLE`, `MULTIPLE`, and `EMPTY` are successful classifications. An unread selected manifest, scan error, or report-write failure returns status `1`; `--match` never changes the inspection result or exit status.
 
 If every corresponding `derive` target already exists, no hashing provider is required.
 
@@ -905,6 +935,12 @@ Format manifests with backups:
 
 ```sh
 checksum-manifest format sha256 -r -d ' *' -n windows -s slash -b /data/releases
+```
+
+Inspect multi-entry manifests recursively while retaining full Entries/Summary totals:
+
+```sh
+checksum-manifest inspect all -r -m multiple -o /tmp/inspect-report.txt /data/releases
 ```
 
 Join SHA-256 manifests recursively:

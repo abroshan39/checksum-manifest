@@ -83,6 +83,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 #include <utime.h>
 
 #define CM_SEP '/'
@@ -97,9 +98,9 @@
 #define O_BINARY 0
 #endif
 
-#define CM_VERSION "1.2.0"
+#define CM_VERSION "1.3.0"
 #define CM_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
-#define CM_HASH_CHUNK (64U * 1024U)
+#define CM_HASH_CHUNK (1024U * 1024U)
 #define CM_PROGRESS_INTERVAL_MS 100ULL
 #define CM_PROGRESS_STOP_TIMEOUT_MS 250UL
 #define CM_RANDOM_SUFFIX_LEN 8
@@ -243,6 +244,7 @@ typedef struct
     const char *algorithm;
     unsigned long long total;
     unsigned long long processed;
+    unsigned long long start_ms;
     unsigned long long last_update_ms;
     size_t line_length;
     unsigned initial_columns;
@@ -302,6 +304,14 @@ typedef enum
     CM_PROVIDER_RHASH
 } CmProvider;
 
+typedef enum
+{
+    CM_HASH_ERROR = -1,
+    CM_HASH_UNSUPPORTED = 0,
+    CM_HASH_OK = 1,
+    CM_HASH_OOM = 2
+} CmHashResult;
+
 typedef struct
 {
     const CmAlgorithmInfo *algo;
@@ -357,6 +367,15 @@ static void *cm_xmalloc(size_t n)
     if(!p)
         cm_allocation_failure();
     return p;
+}
+
+static unsigned char *cm_hash_buffer_alloc(size_t size)
+{
+    unsigned char *buffer = (unsigned char *)malloc(size ? size : 1);
+
+    if(!buffer)
+        fprintf(stderr, "Error: out of memory.\n");
+    return buffer;
 }
 
 static void *cm_xrealloc(void *p, size_t n)
@@ -2255,7 +2274,16 @@ static int cm_progress_clear_line(CmHashProgress *progress)
 static unsigned long long cm_progress_now_ms()
 {
 #ifdef _WIN32
-    return (unsigned long long)GetTickCount();
+    LARGE_INTEGER counter, frequency;
+    unsigned long long seconds, remainder;
+
+    if(!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 || !QueryPerformanceCounter(&counter) || counter.QuadPart < 0)
+        return 0;
+    seconds = (unsigned long long)(counter.QuadPart / frequency.QuadPart);
+    remainder = (unsigned long long)(counter.QuadPart % frequency.QuadPart);
+    if(seconds > ULLONG_MAX / 1000ULL)
+        return ULLONG_MAX;
+    return seconds * 1000ULL + (unsigned long long)((double)remainder * 1000.0 / (double)frequency.QuadPart);
 #elif defined(CLOCK_MONOTONIC)
     struct timespec ts;
 
@@ -2263,11 +2291,13 @@ static unsigned long long cm_progress_now_ms()
         return 0;
     return (unsigned long long)ts.tv_sec * 1000ULL + (unsigned long long)ts.tv_nsec / 1000000ULL;
 #else
-    clock_t value = clock();
+    struct timeval tv;
 
-    if(value == (clock_t)-1)
+    if(gettimeofday(&tv, NULL) != 0 || tv.tv_sec < 0)
         return 0;
-    return (unsigned long long)((double)value * 1000.0 / (double)CLOCKS_PER_SEC);
+    if((unsigned long long)tv.tv_sec > ULLONG_MAX / 1000ULL)
+        return ULLONG_MAX;
+    return (unsigned long long)tv.tv_sec * 1000ULL + (unsigned long long)tv.tv_usec / 1000ULL;
 #endif
 }
 
@@ -2284,6 +2314,23 @@ static void cm_progress_human_size(unsigned long long bytes, char *output, size_
     }
     if(unit_index == 0)
         snprintf(output, output_size, "%llu B", bytes);
+    else
+        snprintf(output, output_size, "%.2f %s", value, units[unit_index]);
+}
+
+static void cm_progress_human_rate(unsigned long long bytes, unsigned long long elapsed_ms, char *output, size_t output_size)
+{
+    const char *units[] = { "B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s", "PiB/s", "EiB/s" };
+    double value = elapsed_ms == 0 ? 0.0 : (double)bytes * 1000.0 / (double)elapsed_ms;
+    size_t unit_index = 0;
+
+    while(value >= 1024.0 && unit_index + 1 < CM_ARRAY_LEN(units))
+    {
+        value /= 1024.0;
+        unit_index++;
+    }
+    if(unit_index == 0)
+        snprintf(output, output_size, "%.0f %s", value, units[unit_index]);
     else
         snprintf(output, output_size, "%.2f %s", value, units[unit_index]);
 }
@@ -2317,7 +2364,9 @@ static void cm_progress_render(CmHashProgress *progress)
     char line[192];
     char processed_size[64];
     char total_size[64];
+    char rate[32];
     double percent;
+    unsigned long long now, elapsed_ms;
     unsigned columns;
     size_t line_length, max_width;
 
@@ -2349,9 +2398,12 @@ static void cm_progress_render(CmHashProgress *progress)
         if(percent > 100.0)
             percent = 100.0;
     }
+    now = cm_progress_now_ms();
+    elapsed_ms = now >= progress->start_ms ? now - progress->start_ms : 0;
     cm_progress_human_size(progress->processed, processed_size, sizeof(processed_size));
     cm_progress_human_size(progress->total, total_size, sizeof(total_size));
-    snprintf(line, sizeof(line), "Hashing [%s]  %s/%s    %.2f%%", progress->algorithm, processed_size, total_size, percent);
+    cm_progress_human_rate(progress->processed, elapsed_ms, rate, sizeof(rate));
+    snprintf(line, sizeof(line), "Hashing [%s]  %s/%s    %.2f%% (%s)", progress->algorithm, processed_size, total_size, percent, rate);
     line_length = strlen(line);
     if(!cm_progress_clear_line(progress))
     {
@@ -2406,6 +2458,7 @@ typedef struct
     volatile LONG processed_high;
     unsigned long long processed_value;
     unsigned long long total;
+    unsigned long long start_ms;
     const char *algorithm;
 } CmWindowsProgress;
 
@@ -2454,6 +2507,7 @@ static DWORD WINAPI cm_progress_windows_worker(LPVOID argument)
     memset(&display, 0, sizeof(display));
     display.algorithm = context->algorithm;
     display.total = context->total;
+    display.start_ms = context->start_ms;
     display.terminal = cm_progress_terminal_open();
     if(!display.terminal)
         return 0;
@@ -2497,6 +2551,7 @@ static void cm_progress_begin(CmHashProgress *progress, FILE *file)
         return;
     if(!cm_progress_file_size(file, &progress->total))
         return;
+    progress->start_ms = cm_progress_now_ms();
 #ifdef _WIN32
     {
         CmWindowsProgress *context;
@@ -2507,6 +2562,7 @@ static void cm_progress_begin(CmHashProgress *progress, FILE *file)
         if(!context)
             return;
         context->total = progress->total;
+        context->start_ms = progress->start_ms;
         context->algorithm = progress->algorithm;
         context->stop_event = CreateEventA(NULL, TRUE, FALSE, NULL);
         if(!context->stop_event)
@@ -4296,13 +4352,13 @@ static void cm_openssl_init()
 }
 #endif
 
-static int cm_hash_openssl(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
+static CmHashResult cm_hash_openssl(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
 {
     char namebuf[64];
     const char *name = cm_provider_algo_name(a, CM_PROVIDER_OPENSSL, namebuf, sizeof(namebuf));
     FILE *f;
     EVP_MD_CTX *ctx;
-    unsigned char buffer[CM_HASH_CHUNK];
+    unsigned char *buffer = NULL;
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int dlen = 0;
     size_t n;
@@ -4345,7 +4401,20 @@ static int cm_hash_openssl(const char *path, const CmAlgorithmInfo *a, CmHashPro
 
     if(EVP_DigestInit_ex(ctx, md, NULL) != 1)
         ok = 0;
-    while(ok && (n = fread(buffer, 1, sizeof(buffer), f)) > 0)
+    if(ok)
+    {
+        buffer = cm_hash_buffer_alloc(CM_HASH_CHUNK);
+        if(!buffer)
+        {
+            EVP_MD_CTX_free(ctx);
+            fclose(f);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+            EVP_MD_free(fetched);
+#endif
+            return CM_HASH_OOM;
+        }
+    }
+    while(ok && (n = fread(buffer, 1, CM_HASH_CHUNK, f)) > 0)
     {
         if(g_interrupted)
         {
@@ -4357,6 +4426,7 @@ static int cm_hash_openssl(const char *path, const CmAlgorithmInfo *a, CmHashPro
         else
             cm_progress_advance(progress, n);
     }
+    free(buffer);
 
     if(ferror(f))
         ok = 0;
@@ -4387,14 +4457,14 @@ static int cm_hash_openssl(const char *path, const CmAlgorithmInfo *a, CmHashPro
     return 1;
 }
 
-static int cm_hash_gcrypt(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
+static CmHashResult cm_hash_gcrypt(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
 {
     char namebuf[64];
     const char *name = cm_provider_algo_name(a, CM_PROVIDER_GCRYPT, namebuf, sizeof(namebuf));
     int id;
     gcry_md_hd_t ctx = NULL;
     FILE *f;
-    unsigned char buffer[CM_HASH_CHUNK];
+    unsigned char *buffer;
     size_t n;
     const unsigned char *raw;
     unsigned int dlen;
@@ -4416,7 +4486,14 @@ static int cm_hash_gcrypt(const char *path, const CmAlgorithmInfo *a, CmHashProg
         return -1;
     }
     cm_progress_begin(progress, f);
-    while((n = fread(buffer, 1, sizeof(buffer), f)) > 0)
+    buffer = cm_hash_buffer_alloc(CM_HASH_CHUNK);
+    if(!buffer)
+    {
+        fclose(f);
+        gcry_md_close(ctx);
+        return CM_HASH_OOM;
+    }
+    while((n = fread(buffer, 1, CM_HASH_CHUNK, f)) > 0)
     {
         if(g_interrupted)
         {
@@ -4426,6 +4503,7 @@ static int cm_hash_gcrypt(const char *path, const CmAlgorithmInfo *a, CmHashProg
         gcry_md_write(ctx, buffer, n);
         cm_progress_advance(progress, n);
     }
+    free(buffer);
 
     if(ferror(f))
         ok = 0;
@@ -4533,12 +4611,12 @@ static unsigned cm_rhash_id(const CmAlgorithmInfo *a)
     return 0;
 }
 
-static int cm_hash_rhash(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
+static CmHashResult cm_hash_rhash(const char *path, const CmAlgorithmInfo *a, CmHashProgress *progress, char **out)
 {
     unsigned id = cm_rhash_id(a);
     rhash ctx;
     FILE *f;
-    unsigned char buffer[CM_HASH_CHUNK];
+    unsigned char *buffer;
     size_t n;
     int ok = 1;
     char text[256];
@@ -4557,7 +4635,14 @@ static int cm_hash_rhash(const char *path, const CmAlgorithmInfo *a, CmHashProgr
         return -1;
     }
     cm_progress_begin(progress, f);
-    while((n = fread(buffer, 1, sizeof(buffer), f)) > 0)
+    buffer = cm_hash_buffer_alloc(CM_HASH_CHUNK);
+    if(!buffer)
+    {
+        fclose(f);
+        rhash_free(ctx);
+        return CM_HASH_OOM;
+    }
+    while((n = fread(buffer, 1, CM_HASH_CHUNK, f)) > 0)
     {
         if(g_interrupted)
         {
@@ -4571,6 +4656,7 @@ static int cm_hash_rhash(const char *path, const CmAlgorithmInfo *a, CmHashProgr
         }
         cm_progress_advance(progress, n);
     }
+    free(buffer);
 
     if(ferror(f))
         ok = 0;
@@ -4587,10 +4673,10 @@ static int cm_hash_rhash(const char *path, const CmAlgorithmInfo *a, CmHashProgr
     return 1;
 }
 
-static int cm_hash_with_provider(const char *path, const CmAlgorithmInfo *a, CmProvider p, char **out, int show_progress)
+static CmHashResult cm_hash_with_provider(const char *path, const CmAlgorithmInfo *a, CmProvider p, char **out, int show_progress)
 {
     CmHashProgress progress;
-    int rc;
+    CmHashResult rc;
 
     memset(&progress, 0, sizeof(progress));
     progress.requested = show_progress;
@@ -4613,21 +4699,21 @@ static char *cm_temp_in_dir(const char *dir);
 static void cm_random_hex(char out[9]);
 static void cm_registry_remove(CmStrVec *v, const char *path);
 
-static int cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
+static CmHashResult cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
 {
     char *digest = NULL;
-    int rc;
+    CmHashResult rc;
 
 #ifdef _WIN32
     char *base = cm_windows_temp_directory_utf8();
     char *tmpname;
 
     if(!base)
-        return 0;
+        return CM_HASH_UNSUPPORTED;
     tmpname = cm_temp_in_dir(base);
     free(base);
     if(!tmpname)
-        return 0;
+        return CM_HASH_UNSUPPORTED;
 
     rc = cm_hash_with_provider(tmpname, a, p, &digest, 0);
     free(digest);
@@ -4635,7 +4721,9 @@ static int cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
     cm_registry_remove(&g_temp_paths, tmpname);
     free(tmpname);
 
-    return rc == 1;
+    if(rc == CM_HASH_OOM)
+        return CM_HASH_OOM;
+    return rc == CM_HASH_OK ? CM_HASH_OK : CM_HASH_UNSUPPORTED;
 #else
     char tmpname[CM_PATH_MAX];
     int attempt;
@@ -4653,47 +4741,59 @@ static int cm_provider_supports(const CmAlgorithmInfo *a, CmProvider p)
             free(digest);
             cm_unlink(tmpname);
             cm_registry_remove(&g_temp_paths, tmpname);
-            return rc == 1;
+            if(rc == CM_HASH_OOM)
+                return CM_HASH_OOM;
+            return rc == CM_HASH_OK ? CM_HASH_OK : CM_HASH_UNSUPPORTED;
         }
     }
 
-    return 0;
+    return CM_HASH_UNSUPPORTED;
 #endif
 }
 
-static CmProvider cm_pick_provider(const CmAlgorithmInfo *a, const char *forced, int *ok)
+static CmProvider cm_pick_provider(const CmAlgorithmInfo *a, const char *forced, CmHashResult *result)
 {
     CmProvider order[] = {CM_PROVIDER_OPENSSL, CM_PROVIDER_GCRYPT, CM_PROVIDER_RHASH};
     size_t i;
 
-    *ok = 0;
+    *result = CM_HASH_UNSUPPORTED;
     if(forced)
     {
         int valid;
         CmProvider p = cm_provider_from_name(forced, &valid);
+        CmHashResult probe;
 
         if(!valid || p == CM_PROVIDER_AUTO)
             return CM_PROVIDER_AUTO;
-        if(cm_provider_supports(a, p))
-        {
-            *ok = 1;
-            return p;
-        }
+        probe = cm_provider_supports(a, p);
+        if(probe == CM_HASH_OK)
+            *result = CM_HASH_OK;
+        else if(probe == CM_HASH_OOM)
+            *result = CM_HASH_OOM;
         return p;
     }
 
     for(i = 0; i < CM_ARRAY_LEN(order); i++)
-        if(cm_provider_supports(a, order[i]))
+    {
+        CmHashResult probe = cm_provider_supports(a, order[i]);
+
+        if(probe == CM_HASH_OOM)
         {
-            *ok = 1;
+            *result = CM_HASH_OOM;
             return order[i];
         }
+        if(probe == CM_HASH_OK)
+        {
+            *result = CM_HASH_OK;
+            return order[i];
+        }
+    }
 
     return CM_PROVIDER_AUTO;
 }
 
 /* Resolve and probe each algorithm once; execution then uses the locked provider choice for deterministic behavior. */
-static int cm_prepare_providers(const CmStrVec *algos, const CmProviderOverrideVec *forced, CmProviderChoiceVec *out)
+static CmHashResult cm_prepare_providers(const CmStrVec *algos, const CmProviderOverrideVec *forced, CmProviderChoiceVec *out)
 {
     size_t i;
 
@@ -4701,27 +4801,29 @@ static int cm_prepare_providers(const CmStrVec *algos, const CmProviderOverrideV
     {
         const CmAlgorithmInfo *a = cm_find_algo(algos->v[i]);
         const char *f = cm_provider_override_for(forced, algos->v[i]);
-        int ok;
+        CmHashResult result;
         CmProvider p;
 
         if(!a)
         {
             fprintf(stderr, "Error: unsupported hash algorithm: %s\n", algos->v[i]);
-            return 0;
+            return CM_HASH_ERROR;
         }
-        p = cm_pick_provider(a, f, &ok);
-        if(!ok)
+        p = cm_pick_provider(a, f, &result);
+        if(result == CM_HASH_OOM)
+            return CM_HASH_OOM;
+        if(result != CM_HASH_OK)
         {
             if(f)
                 fprintf(stderr, "Error: pinned checksum provider is unavailable for %s: %s.\n", algos->v[i], f);
             else
                 fprintf(stderr, "Error: no supported checksum provider available for: %s\n", algos->v[i]);
-            return 0;
+            return CM_HASH_ERROR;
         }
         cm_pcv_push(out, a, p);
     }
 
-    return 1;
+    return CM_HASH_OK;
 }
 
 static CmProvider cm_choice_for(const CmProviderChoiceVec *v, const char *algo)
@@ -4922,8 +5024,9 @@ static void cm_print_help(const char *argv0)
     printf("  derive needs a provider only when a target manifest is missing.\n\n");
 
     printf("Memory safety:\n");
-    printf("  Dynamic buffers and vectors use checked size arithmetic before growth and\n");
-    printf("  allocation, preventing size_t wraparound in allocation-size calculations.\n\n");
+    printf("  Growable buffers and vectors use checked size arithmetic before growth and\n");
+    printf("  allocation, preventing size_t wraparound in allocation-size calculations.\n");
+    printf("  Per-provider hash read buffers are heap-allocated and released after use.\n\n");
 
     printf("Built-in algorithms:\n");
     for(i = 0; i < CM_ARRAY_LEN(kAlgorithmInfo); i++)
@@ -6030,7 +6133,7 @@ static int cm_mode_hash(const CmOptions *o)
     CmHashOutput output;
     const char *newline = cm_newline_bytes(o->newline_mode);
     size_t i, j, algorithm_width = 0;
-    int errors = 0, output_ok = 1;
+    int errors = 0, output_ok = 1, oom = 0;
 #ifndef _WIN32
     struct sigaction previous_pipe_action, ignored_pipe_action;
     int pipe_action_saved = 0;
@@ -6056,11 +6159,16 @@ static int cm_mode_hash(const CmOptions *o)
         cm_sv_free(&files);
         return 2;
     }
-    if(files.n && !cm_prepare_providers(&o->algorithms, &o->tools, &providers))
+    if(files.n)
     {
-        cm_pcv_free(&providers);
-        cm_sv_free(&files);
-        return 127;
+        CmHashResult provider_result = cm_prepare_providers(&o->algorithms, &o->tools, &providers);
+
+        if(provider_result != CM_HASH_OK)
+        {
+            cm_pcv_free(&providers);
+            cm_sv_free(&files);
+            return provider_result == CM_HASH_OOM ? 2 : 127;
+        }
     }
     if(!cm_hash_output_open(o, &output))
     {
@@ -6081,7 +6189,7 @@ static int cm_mode_hash(const CmOptions *o)
             if(strlen(o->algorithms.v[i]) > algorithm_width)
                 algorithm_width = strlen(o->algorithms.v[i]);
 
-    for(i = 0; i < files.n && output_ok && !g_interrupted; i++)
+    for(i = 0; i < files.n && output_ok && !g_interrupted && !oom; i++)
     {
         char *entry = NULL;
 
@@ -6103,9 +6211,15 @@ static int cm_mode_hash(const CmOptions *o)
             char *digest = NULL;
             char *record;
             char *line;
-            int rc = cm_hash_with_provider(files.v[i], ai, provider, &digest, 1);
+            CmHashResult rc = cm_hash_with_provider(files.v[i], ai, provider, &digest, 1);
 
-            if(rc != 1)
+            if(rc == CM_HASH_OOM)
+            {
+                free(digest);
+                oom = 1;
+                break;
+            }
+            if(rc != CM_HASH_OK)
             {
                 if(!g_interrupted)
                 {
@@ -6154,7 +6268,7 @@ static int cm_mode_hash(const CmOptions *o)
         free(entry);
     }
 
-    if(!cm_hash_output_close(&output, output_ok && !g_interrupted))
+    if(!cm_hash_output_close(&output, output_ok && !g_interrupted && !oom))
     {
         if(output_ok && !g_interrupted)
             fprintf(stderr, "Error: failed to finalize hash output\n");
@@ -6164,7 +6278,7 @@ static int cm_mode_hash(const CmOptions *o)
     if(pipe_action_saved)
         sigaction(SIGPIPE, &previous_pipe_action, NULL);
 #endif
-    if(output.broken_pipe)
+    if(output.broken_pipe && !oom)
     {
         cm_pcv_free(&providers);
         cm_sv_free(&files);
@@ -6174,6 +6288,8 @@ static int cm_mode_hash(const CmOptions *o)
         errors++;
     cm_pcv_free(&providers);
     cm_sv_free(&files);
+    if(oom)
+        return 2;
 
     return errors ? 1 : 0;
 }
@@ -6184,7 +6300,7 @@ static int cm_mode_generate(const CmOptions *o)
     CmProviderChoiceVec providers = {0};
     CmCountMap entry_counts = {0};
     size_t i, j;
-    int errors = 0, entries = 0, outputs = 0;
+    int errors = 0, entries = 0, outputs = 0, oom = 0;
     int natural = o->natural_sort;
     char *source_base = cm_generate_source_base(o->path);
     CmStrVec single_paths = {0};
@@ -6302,14 +6418,18 @@ static int cm_mode_generate(const CmOptions *o)
         return errors ? 1 : 0;
     }
 
-    if(!cm_prepare_providers(&o->algorithms, &o->tools, &providers))
     {
-        cm_pcv_free(&providers);
-        cm_count_free(&entry_counts);
-        cm_sv_free(&single_paths);
-        cm_sv_free(&files);
-        free(source_base);
-        return 127;
+        CmHashResult provider_result = cm_prepare_providers(&o->algorithms, &o->tools, &providers);
+
+        if(provider_result != CM_HASH_OK)
+        {
+            cm_pcv_free(&providers);
+            cm_count_free(&entry_counts);
+            cm_sv_free(&single_paths);
+            cm_sv_free(&files);
+            free(source_base);
+            return provider_result == CM_HASH_OOM ? 2 : 127;
+        }
     }
 
     if(strcmp(o->layout, "single") == 0)
@@ -6331,9 +6451,15 @@ static int cm_mode_generate(const CmOptions *o)
             {
                 const CmAlgorithmInfo *ai = cm_find_algo(algo);
                 char *digest = NULL, *entry;
-                int rc = cm_hash_with_provider(files.v[j], ai, p, &digest, 1);
+                CmHashResult rc = cm_hash_with_provider(files.v[j], ai, p, &digest, 1);
 
-                if(rc != 1)
+                if(rc == CM_HASH_OOM)
+                {
+                    free(digest);
+                    oom = 1;
+                    break;
+                }
+                if(rc != CM_HASH_OK)
                 {
                     if(!g_interrupted)
                     {
@@ -6358,6 +6484,11 @@ static int cm_mode_generate(const CmOptions *o)
                 cm_count_inc(&entry_counts, algo);
                 free(digest);
                 free(entry);
+            }
+            if(oom)
+            {
+                cm_rv_free(&rec);
+                break;
             }
             if(rec.n)
             {
@@ -6391,8 +6522,8 @@ static int cm_mode_generate(const CmOptions *o)
     {
         char *output_root = o->output ? cm_path_normalize(o->output) : NULL;
 
-        for(i = 0; i < files.n; i++)
-            for(j = 0; j < o->algorithms.n; j++)
+        for(i = 0; i < files.n && !oom; i++)
+            for(j = 0; j < o->algorithms.n && !oom; j++)
             {
                 const char *algo = o->algorithms.v[j];
                 const CmAlgorithmInfo *ai = cm_find_algo(algo);
@@ -6400,17 +6531,27 @@ static int cm_mode_generate(const CmOptions *o)
                 char *digest = NULL, *intended, *reserved, *entry;
                 CmRecordVec rec = {0};
 
-                if(cm_hash_with_provider(files.v[i], ai, p, &digest, 1) != 1)
                 {
-                    if(!g_interrupted)
+                    CmHashResult rc = cm_hash_with_provider(files.v[i], ai, p, &digest, 1);
+
+                    if(rc == CM_HASH_OOM)
                     {
-                        fprintf(stderr, "Error: %s: failed to calculate %s checksum\n", cm_terminal_path_view(files.v[i]), algo);
-                        errors++;
-                    }
-                    free(digest);
-                    if(g_interrupted)
+                        free(digest);
+                        oom = 1;
                         break;
-                    continue;
+                    }
+                    if(rc != CM_HASH_OK)
+                    {
+                        if(!g_interrupted)
+                        {
+                            fprintf(stderr, "Error: %s: failed to calculate %s checksum\n", cm_terminal_path_view(files.v[i]), algo);
+                            errors++;
+                        }
+                        free(digest);
+                        if(g_interrupted)
+                            break;
+                        continue;
+                    }
                 }
                 intended = cm_generate_separate_path(files.v[i], algo, o);
                 if(output_root && !cm_secure_prepare_parent(output_root, intended))
@@ -6477,6 +6618,16 @@ static int cm_mode_generate(const CmOptions *o)
                 free(intended);
             }
         free(output_root);
+    }
+
+    if(oom)
+    {
+        cm_count_free(&entry_counts);
+        cm_pcv_free(&providers);
+        cm_sv_free(&single_paths);
+        cm_sv_free(&files);
+        free(source_base);
+        return 2;
     }
 
     if(g_interrupted)
@@ -6612,7 +6763,7 @@ static int cm_mode_check(const CmOptions *o)
     CmProviderChoiceVec providers = {0};
     CmCountMap entry_counts = {0};
     size_t i, j;
-    int errors = 0, manicount = 0, entries = 0, valid = 0, invalid = 0, unread = 0;
+    int errors = 0, manicount = 0, entries = 0, valid = 0, invalid = 0, unread = 0, oom = 0;
     char *base;
     CmReporter rep;
     char *report_path = NULL;
@@ -6662,12 +6813,16 @@ static int cm_mode_check(const CmOptions *o)
                 cm_sv_push(&present, o->algorithms.v[i]);
                 break;
             }
-    if(!cm_prepare_providers(&present, &o->tools, &providers))
     {
-        cm_pcv_free(&providers);
-        cm_mv_free(&manifests);
-        cm_sv_free(&present);
-        return 127;
+        CmHashResult provider_result = cm_prepare_providers(&present, &o->tools, &providers);
+
+        if(provider_result != CM_HASH_OK)
+        {
+            cm_pcv_free(&providers);
+            cm_mv_free(&manifests);
+            cm_sv_free(&present);
+            return provider_result == CM_HASH_OOM ? 2 : 127;
+        }
     }
 
     if(o->output)
@@ -6710,7 +6865,7 @@ static int cm_mode_check(const CmOptions *o)
         base = cm_getcwd_utf8();
     else
         base = cm_report_base(o->path);
-    for(i = 0; i < manifests.n; i++)
+    for(i = 0; i < manifests.n && !oom; i++)
     {
         CmRecordVec rec = {0};
 
@@ -6746,7 +6901,7 @@ static int cm_mode_check(const CmOptions *o)
         {
             char *target = cm_entry_target(manifests.v[i].path, rec.v[j].name, o->path_separator, 0, 0), *rp = cm_report_path(target, base, "slash", rec.v[j].name), *digest = NULL;
             CmBuf disp;
-            int rc;
+            CmHashResult rc;
 
             cm_buf_init(&disp);
             cm_buf_append(&disp, rp);
@@ -6767,14 +6922,22 @@ static int cm_mode_check(const CmOptions *o)
                 continue;
             }
             rc = cm_hash_with_provider(target, ai, p, &digest, 1);
-            if(rc != 1 && g_interrupted)
+            if(rc == CM_HASH_OOM)
+            {
+                cm_buf_free(&disp);
+                free(digest);
+                free(target);
+                oom = 1;
+                break;
+            }
+            if(rc != CM_HASH_OK && g_interrupted)
             {
                 cm_buf_free(&disp);
                 free(digest);
                 free(target);
                 break;
             }
-            else if(rc != 1)
+            else if(rc != CM_HASH_OK)
             {
                 char *d = cm_buf_take(&disp);
 
@@ -6807,7 +6970,7 @@ static int cm_mode_check(const CmOptions *o)
         cm_rv_free(&rec);
     }
 
-    if(g_interrupted)
+    if(g_interrupted || oom)
     {
         cm_reporter_close(&rep);
         if(report_path)
@@ -6821,7 +6984,7 @@ static int cm_mode_check(const CmOptions *o)
         cm_sv_free(&present);
         cm_pcv_free(&providers);
         cm_count_free(&entry_counts);
-        return 1;
+        return oom ? 2 : 1;
     }
 
     cm_reporter_line(&rep, "");
@@ -7471,7 +7634,7 @@ static int cm_mode_derive(const CmOptions *o)
     size_t i, j, k;
     CmStrVec needed = {0}, used_tools = {0};
     CmProviderChoiceVec providers = {0};
-    int scan_errors = 0, errors = 0, source_valid = 0, source_failed = 0, source_entries = 0, missing_total = 0, present_entries = 0, created_entries = 0, failed_entries = 0, created = 0, complete = 0, incomplete = 0, failed_targets = 0;
+    int scan_errors = 0, errors = 0, source_valid = 0, source_failed = 0, source_entries = 0, missing_total = 0, present_entries = 0, created_entries = 0, failed_entries = 0, created = 0, complete = 0, incomplete = 0, failed_targets = 0, oom = 0;
 
     cm_collect_manifests(o->path, o->recursive, &o->source_algorithms, 0, &src);
     scan_errors = g_scan_errors;
@@ -7516,17 +7679,22 @@ static int cm_mode_derive(const CmOptions *o)
                 cm_sv_push(&needed, o->algorithms.v[j]);
             cm_sv_free(&peers);
         }
-    if(needed.n && !cm_prepare_providers(&needed, &o->tools, &providers))
+    if(needed.n)
     {
-        cm_pcv_free(&providers);
-        cm_sv_free(&needed);
-        free(outroot);
-        free(source_base);
-        cm_mv_free(&src);
-        return 127;
+        CmHashResult provider_result = cm_prepare_providers(&needed, &o->tools, &providers);
+
+        if(provider_result != CM_HASH_OK)
+        {
+            cm_pcv_free(&providers);
+            cm_sv_free(&needed);
+            free(outroot);
+            free(source_base);
+            cm_mv_free(&src);
+            return provider_result == CM_HASH_OOM ? 2 : 127;
+        }
     }
 
-    for(i = 0; i < src.n; i++)
+    for(i = 0; i < src.n && !oom; i++)
     {
         CmRecordVec entries = {0};
 
@@ -7563,7 +7731,7 @@ static int cm_mode_derive(const CmOptions *o)
             qsort(entries.v, entries.n, sizeof(CmRecord), cm_record_name_lex_qsort);
         if(cm_file_info(src.v[i].path, 1, &srcinfo) != 0)
             memset(&srcinfo, 0, sizeof(srcinfo));
-        for(j = 0; j < o->algorithms.n; j++)
+        for(j = 0; j < o->algorithms.n && !oom; j++)
         {
             const char *target_algo;
             CmStrVec peers = {0};
@@ -7721,30 +7889,49 @@ static int cm_mode_derive(const CmOptions *o)
                     }
                     if(!cm_sv_contains(&used_tools, target_algo))
                         cm_sv_push(&used_tools, target_algo);
-                    if(cm_hash_with_provider(target, ai, p, &digest, 1) != 1)
                     {
-                        if(!g_interrupted)
-                        {
-                            {
-                                const char *source_display = cm_terminal_absolute_path_view(src.v[i].path);
-                                const char *entry_display = cm_terminal_path_view(entries.v[k].name);
+                        CmHashResult rc = cm_hash_with_provider(target, ai, p, &digest, 1);
 
-                                fprintf(stderr, "Error: %s:%zu: failed to calculate %s checksum for %s\n", source_display, entries.v[k].line_no, target_algo, entry_display);
-                            }
-                            errors++;
-                        }
-                        fail = 1;
-                        free(outname);
-                        free(target);
-                        free(digest);
-                        if(g_interrupted)
+                        if(rc == CM_HASH_OOM)
+                        {
+                            fail = 1;
+                            oom = 1;
+                            free(outname);
+                            free(target);
+                            free(digest);
                             break;
-                        continue;
+                        }
+                        if(rc != CM_HASH_OK)
+                        {
+                            if(!g_interrupted)
+                            {
+                                {
+                                    const char *source_display = cm_terminal_absolute_path_view(src.v[i].path);
+                                    const char *entry_display = cm_terminal_path_view(entries.v[k].name);
+
+                                    fprintf(stderr, "Error: %s:%zu: failed to calculate %s checksum for %s\n", source_display, entries.v[k].line_no, target_algo, entry_display);
+                                }
+                                errors++;
+                            }
+                            fail = 1;
+                            free(outname);
+                            free(target);
+                            free(digest);
+                            if(g_interrupted)
+                                break;
+                            continue;
+                        }
                     }
                     cm_add_record(&outrec, digest, outname);
                     free(digest);
                     free(outname);
                     free(target);
+                }
+                if(oom)
+                {
+                    cm_rv_free(&outrec);
+                    free(intended);
+                    break;
                 }
                 if(fail || outrec.n != entries.n)
                 {
@@ -7803,7 +7990,7 @@ static int cm_mode_derive(const CmOptions *o)
         cm_rv_free(&entries);
     }
 
-    if(g_interrupted)
+    if(g_interrupted || oom)
     {
         if(!o->update_timestamp)
             cm_dtv_restore(&dirs, &timestamp_issues);
@@ -7818,7 +8005,7 @@ static int cm_mode_derive(const CmOptions *o)
         free(outroot);
         free(source_base);
         cm_mv_free(&src);
-        return 1;
+        return oom ? 2 : 1;
     }
 
     printf("\n");

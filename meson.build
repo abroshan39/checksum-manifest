@@ -1,4 +1,4 @@
-project('checksum-manifest', 'c', version: '1.2.0', meson_version: '>=0.54.0', default_options: ['c_std=c99', 'warning_level=2'])
+project('checksum-manifest', 'c', version: '1.3.0', meson_version: '>=0.54.0', default_options: ['c_std=c99', 'warning_level=2'])
 
 cc = meson.get_compiler('c')
 fs = import('fs')

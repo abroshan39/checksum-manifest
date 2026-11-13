@@ -592,7 +592,7 @@ For every non-CRC algorithm, `-d/--delimiter` accepts exactly:
 
 Shell examples normally quote these as `'  '` and `' *'`.
 
-The default is two spaces. `generate`, `derive`, `format`, `join`, and `split` use the selected delimiter when writing non-CRC records. `check` recognition is independent of the selected output delimiter.
+The default is two spaces. `hash` (except `--digest-only`), `generate`, `derive`, `format`, `join`, and `split` use the selected delimiter when writing non-CRC records. `check` recognition is independent of the selected output delimiter.
 
 For CRC32/CRC32C the option is accepted but ignored; CRC output uses its filename-first single-space form.
 
@@ -818,6 +818,7 @@ Default: `slash`.
 
 Mode-dependent meaning:
 
+- `hash`: controls separator style used when rendering relative filenames in non-digest-only output. `--digest-only` has no filename field and is unaffected.
 - `generate`: controls separator style written into generated relative entry paths.
 - `check`, `join`, `split`: controls interpretation of path text read from manifests.
 - `derive`: controls reference path interpretation and the representation of newly created target entries. The default `slash` mode treats both slash characters as separator markers and writes `/`.
@@ -845,7 +846,7 @@ The portable hash/generate filter operates on filename bytes. `?` matches one fi
 
 ## Memory safety
 
-Memory management is centralized and defensive. Dynamic buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap `size_t` before allocation, and owned heap resources have explicit cleanup paths.
+Memory management is centralized and defensive. Growable buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap `size_t` before allocation. Per-provider hash read buffers are heap-allocated rather than placed on the stack, and owned heap resources have explicit cleanup paths.
 
 ## Signals and cleanup
 

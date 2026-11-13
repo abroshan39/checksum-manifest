@@ -800,7 +800,7 @@ backup-?.tar
 &lt;space&gt;*
 </code></pre>
 <p>Shell examples normally quote these as <code>'  '</code> and <code>' *'</code>.</p>
-<p>The default is two spaces. <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, and <code>split</code> use the selected delimiter when writing non-CRC records. <code>check</code> recognition is independent of the selected output delimiter.</p>
+<p>The default is two spaces. <code>hash</code> (except <code>--digest-only</code>), <code>generate</code>, <code>derive</code>, <code>format</code>, <code>join</code>, and <code>split</code> use the selected delimiter when writing non-CRC records. <code>check</code> recognition is independent of the selected output delimiter.</p>
 <p>For CRC32/CRC32C the option is accepted but ignored; CRC output uses its filename-first single-space form.</p>
 <h2 id="verification-results">Verification results</h2>
 <p><code>check</code> uses these labels:</p>
@@ -952,6 +952,8 @@ system
 <p><code>inspect</code> does not accept <code>--path-separator</code>. Its displayed/report manifest paths always use <code>/</code>, while entry filenames are parsed only to determine whether a record is a recognized Entry and are never resolved as filesystem paths.</p>
 <p>Mode-dependent meaning:</p>
 <ul>
+<li><code>hash</code>: controls separator style used when rendering relative filenames in non-digest-only output. <code>--digest-only</code> has no filename field and is unaffected.
+</li>
 <li><code>generate</code>: controls separator style written into generated relative entry paths.
 </li>
 <li><code>check</code>, <code>join</code>, <code>split</code>: controls interpretation of path text read from manifests.
@@ -972,7 +974,7 @@ system
 <p>On Windows, long filesystem paths beyond the legacy <code>MAX_PATH</code> limit are supported.</p>
 <p>The portable hash/generate filter operates on filename bytes. <code>?</code> matches one filesystem byte, not one Unicode code point. Literal non-ASCII filter text is matched using its encoded bytes; Unicode case folding is not performed.</p>
 <h2 id="memory-safety">Memory safety</h2>
-<p>Memory management is centralized and defensive. Dynamic buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap <code>size_t</code> before allocation, and owned heap resources have explicit cleanup paths.</p>
+<p>Memory management is centralized and defensive. Growable buffers, vectors, and allocation-size calculations use checked size arithmetic so size growth cannot silently wrap <code>size_t</code> before allocation. Per-provider hash read buffers are heap-allocated rather than placed on the stack, and owned heap resources have explicit cleanup paths.</p>
 <h2 id="signals-and-cleanup">Signals and cleanup</h2>
 <p><code>SIGINT</code> and <code>SIGTERM</code> request cooperative cancellation. Hashing/writing loops observe the signal state, temporary files and reserved collision paths are cleaned, and the process exits with <code>128 + signal</code> when interruption is observed. Normal <code>Operation complete.</code> summaries are suppressed after interruption, and no cancellation or interruption message is printed.</p>
 <p>A partially written <code>check</code> report or manifest temporary file is not intentionally left as a committed output. Outputs that were already committed before a later signal are not rolled back.</p>

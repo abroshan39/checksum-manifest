@@ -274,6 +274,7 @@ Long options that take a value accept both `--option VALUE` and `--option=VALUE`
 -m, --match MODE             inspect only: all|single|multiple|empty
 -s, --path-separator MODE
 -t, --tools SPEC
+-p, --progress MODE          auto|off; default: auto
 -f, --filter PATTERN
 -C, --filter-case MODE
 -D, --digest-only
@@ -295,6 +296,7 @@ Option applicability:
 - `--delimiter`, `--path-separator`: invalid with `inspect` and `remove`; other modes retain their existing behavior.
 - `--match`: `inspect` only; values are `all`, `single`, `multiple`, or `empty` (default `all`).
 - `--tools`: `check`, `hash`, `generate`, `derive` only.
+- `--progress`: `check`, `hash`, `generate`, `derive` only; `auto` is the default and displays the current progress line only while it fits the terminal width, including after resize; `off` disables progress display.
 - `--filter`, `--filter-case`: `hash` and `generate` only. `--filter-case` requires explicit `--filter`.
 - `--digest-only`: `hash` only.
 - `--layout`: `generate` only.
@@ -347,7 +349,7 @@ Digest-only output remains file-major and follows selector order. `--delimiter` 
 
 `hash` prints no `Tools`, `Entries`, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. `-o/--output` writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different `-o` pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or `-o` output ends with a newline. Early downstream pipe closure is treated as normal successful termination.
 
-The supported options are `-r/--recursive`, `-o/--output`, `-d/--delimiter`, `-n/--newline`, `-s/--path-separator`, `-t/--tools`, `-f/--filter`, `-C/--filter-case`, `-D/--digest-only`, `-N/--natural-sort`, and `-L/--lexicographic-sort`. Their defaults match `generate` where applicable: filter `*`, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.
+The supported options are `-r/--recursive`, `-o/--output`, `-d/--delimiter`, `-n/--newline`, `-s/--path-separator`, `-t/--tools`, `-p/--progress`, `-f/--filter`, `-C/--filter-case`, `-D/--digest-only`, `-N/--natural-sort`, and `-L/--lexicographic-sort`. Their defaults match `generate` where applicable: filter `*`, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.
 
 If one file or one algorithm fails to hash, the error is written to stderr, remaining work continues, successful records are retained, and the final status is nonzero.
 

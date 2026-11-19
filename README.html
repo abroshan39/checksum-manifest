@@ -579,6 +579,7 @@ checksum-manifest (-h | --help | -v | --version)
 -m, --match MODE             inspect only: all|single|multiple|empty
 -s, --path-separator MODE
 -t, --tools SPEC
+-p, --progress MODE          auto|off; default: auto
 -f, --filter PATTERN
 -C, --filter-case MODE
 -D, --digest-only
@@ -605,6 +606,8 @@ checksum-manifest (-h | --help | -v | --version)
 <li><code>--match</code>: <code>inspect</code> only; values are <code>all</code>, <code>single</code>, <code>multiple</code>, or <code>empty</code> (default <code>all</code>).
 </li>
 <li><code>--tools</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code> only.
+</li>
+<li><code>--progress</code>: <code>check</code>, <code>hash</code>, <code>generate</code>, <code>derive</code> only; <code>auto</code> is the default and displays the current progress line only while it fits the terminal width, including after resize; <code>off</code> disables progress display.
 </li>
 <li><code>--filter</code>, <code>--filter-case</code>: <code>hash</code> and <code>generate</code> only. <code>--filter-case</code> requires explicit <code>--filter</code>.
 </li>
@@ -645,7 +648,7 @@ checksum-manifest hash sha256 -r -o hashes.txt /data
 </code></pre>
 <p>Digest-only output remains file-major and follows selector order. <code>--delimiter</code> and <code>--path-separator</code> are accepted but do not affect digest-only output. Without <code>--digest-only</code>, output paths are relative to the input root: a file input uses its basename, while directory input preserves paths below that directory. <code>--path-separator</code> controls rendering.</p>
 <p><code>hash</code> prints no <code>Tools</code>, <code>Entries</code>, summary, completion message, or output-path status on stdout; stdout contains hash output only. Diagnostics go to stderr. <code>-o/--output</code> writes the same output byte stream to one collision-safe file instead of stdout. If a collision selects a different <code>-o</code> pathname, the actual pathname is reported on stderr. Each emitted record ends with the selected newline, so non-empty redirected or <code>-o</code> output ends with a newline. Early downstream pipe closure is treated as normal successful termination.</p>
-<p>The supported options are <code>-r/--recursive</code>, <code>-o/--output</code>, <code>-d/--delimiter</code>, <code>-n/--newline</code>, <code>-s/--path-separator</code>, <code>-t/--tools</code>, <code>-f/--filter</code>, <code>-C/--filter-case</code>, <code>-D/--digest-only</code>, <code>-N/--natural-sort</code>, and <code>-L/--lexicographic-sort</code>. Their defaults match <code>generate</code> where applicable: filter <code>*</code>, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.</p>
+<p>The supported options are <code>-r/--recursive</code>, <code>-o/--output</code>, <code>-d/--delimiter</code>, <code>-n/--newline</code>, <code>-s/--path-separator</code>, <code>-t/--tools</code>, <code>-p/--progress</code>, <code>-f/--filter</code>, <code>-C/--filter-case</code>, <code>-D/--digest-only</code>, <code>-N/--natural-sort</code>, and <code>-L/--lexicographic-sort</code>. Their defaults match <code>generate</code> where applicable: filter <code>*</code>, case-sensitive matching, Unix newlines, slash path separators, automatic provider selection, and normal bytewise discovery order unless a sort option is selected.</p>
 <p>If one file or one algorithm fails to hash, the error is written to stderr, remaining work continues, successful records are retained, and the final status is nonzero.</p>
 <h3 id="generate">generate</h3>
 <p><code>generate</code> hashes regular files and writes checksum manifests.</p>

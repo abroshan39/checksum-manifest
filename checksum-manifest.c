@@ -98,7 +98,7 @@
 #define O_BINARY 0
 #endif
 
-#define CM_VERSION "1.3.0"
+#define CM_VERSION "1.4.0"
 #define CM_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 #define CM_HASH_CHUNK (1024U * 1024U)
 #define CM_PROGRESS_INTERVAL_MS 100ULL
@@ -247,10 +247,8 @@ typedef struct
     unsigned long long start_ms;
     unsigned long long last_update_ms;
     size_t line_length;
-    unsigned initial_columns;
     int requested;
     int active;
-    int disabled_after_resize;
 #ifdef _WIN32
     void *windows_context;
 #endif
@@ -267,6 +265,7 @@ typedef struct
     char *delimiter;
     char *newline_mode;
     char *path_separator;
+    char *progress_mode;
     char *filter_pattern;
     char *filter_case;
     char *layout;
@@ -284,6 +283,7 @@ typedef struct
     int layout_explicit;
     int newline_explicit;
     int path_separator_explicit;
+    int progress_explicit;
     int match_explicit;
 } CmOptions;
 
@@ -2370,24 +2370,9 @@ static void cm_progress_render(CmHashProgress *progress)
     unsigned columns;
     size_t line_length, max_width;
 
-    if(!progress->active || !progress->terminal || progress->disabled_after_resize)
+    if(!progress->active || !progress->terminal)
         return;
     columns = cm_progress_terminal_columns(progress->terminal);
-    if(progress->initial_columns == 0 && columns > 1)
-    {
-        progress->initial_columns = columns;
-    }
-    else if(progress->initial_columns > 0 && columns != progress->initial_columns)
-    {
-        if(!cm_progress_clear_line(progress))
-        {
-            cm_progress_disable(progress);
-            return;
-        }
-        progress->disabled_after_resize = 1;
-        progress->last_update_ms = cm_progress_now_ms();
-        return;
-    }
     if(progress->total == 0)
     {
         percent = 100.0;
@@ -4940,6 +4925,8 @@ static void cm_print_help(const char *argv0)
     printf("                               Provider aliases: gcrypt and rhash. Pinned algorithms do\n");
     printf("                               not fall back; unlisted algorithms use automatic provider\n");
     printf("                               selection.\n");
+    printf("  -p, --progress MODE          check/hash/generate/derive only: auto or off. Default: auto.\n");
+    printf("                               auto shows progress only while the current line fits the terminal.\n");
     printf("  -f, --filter PATTERN         generate/hash only. Portable shell-style basename filter.\n");
     printf("                               Default: *.\n");
     printf("  -C, --filter-case MODE       generate/hash only: sensitive or insensitive. Requires explicit\n");
@@ -6211,7 +6198,7 @@ static int cm_mode_hash(const CmOptions *o)
             char *digest = NULL;
             char *record;
             char *line;
-            CmHashResult rc = cm_hash_with_provider(files.v[i], ai, provider, &digest, 1);
+            CmHashResult rc = cm_hash_with_provider(files.v[i], ai, provider, &digest, strcmp(o->progress_mode, "auto") == 0);
 
             if(rc == CM_HASH_OOM)
             {
@@ -6451,7 +6438,7 @@ static int cm_mode_generate(const CmOptions *o)
             {
                 const CmAlgorithmInfo *ai = cm_find_algo(algo);
                 char *digest = NULL, *entry;
-                CmHashResult rc = cm_hash_with_provider(files.v[j], ai, p, &digest, 1);
+                CmHashResult rc = cm_hash_with_provider(files.v[j], ai, p, &digest, strcmp(o->progress_mode, "auto") == 0);
 
                 if(rc == CM_HASH_OOM)
                 {
@@ -6532,7 +6519,7 @@ static int cm_mode_generate(const CmOptions *o)
                 CmRecordVec rec = {0};
 
                 {
-                    CmHashResult rc = cm_hash_with_provider(files.v[i], ai, p, &digest, 1);
+                    CmHashResult rc = cm_hash_with_provider(files.v[i], ai, p, &digest, strcmp(o->progress_mode, "auto") == 0);
 
                     if(rc == CM_HASH_OOM)
                     {
@@ -6921,7 +6908,7 @@ static int cm_mode_check(const CmOptions *o)
                 free(target);
                 continue;
             }
-            rc = cm_hash_with_provider(target, ai, p, &digest, 1);
+            rc = cm_hash_with_provider(target, ai, p, &digest, strcmp(o->progress_mode, "auto") == 0);
             if(rc == CM_HASH_OOM)
             {
                 cm_buf_free(&disp);
@@ -7890,7 +7877,7 @@ static int cm_mode_derive(const CmOptions *o)
                     if(!cm_sv_contains(&used_tools, target_algo))
                         cm_sv_push(&used_tools, target_algo);
                     {
-                        CmHashResult rc = cm_hash_with_provider(target, ai, p, &digest, 1);
+                        CmHashResult rc = cm_hash_with_provider(target, ai, p, &digest, strcmp(o->progress_mode, "auto") == 0);
 
                         if(rc == CM_HASH_OOM)
                         {
@@ -9545,6 +9532,7 @@ static void cm_options_init(CmOptions *o)
     memset(o, 0, sizeof(*o));
     o->newline_mode = cm_xstrdup("unix");
     o->path_separator = cm_xstrdup("slash");
+    o->progress_mode = cm_xstrdup("auto");
     o->filter_pattern = cm_xstrdup("*");
     o->filter_case = cm_xstrdup("sensitive");
     o->layout = cm_xstrdup("separate");
@@ -9562,6 +9550,7 @@ static void cm_options_free(CmOptions *o)
     free(o->delimiter);
     free(o->newline_mode);
     free(o->path_separator);
+    free(o->progress_mode);
     free(o->filter_pattern);
     free(o->filter_case);
     free(o->layout);
@@ -9796,7 +9785,7 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         }
         else if(strcmp(a, "-o") == 0 || strcmp(a, "--output") == 0 || strcmp(a, "-d") == 0 || strcmp(a, "--delimiter") == 0 ||
             strcmp(a, "-n") == 0 || strcmp(a, "--newline") == 0 || strcmp(a, "-s") == 0 || strcmp(a, "--path-separator") == 0 ||
-            strcmp(a, "-t") == 0 || strcmp(a, "--tools") == 0 || strcmp(a, "-F") == 0 || strcmp(a, "--from") == 0 ||
+            strcmp(a, "-t") == 0 || strcmp(a, "--tools") == 0 || strcmp(a, "-p") == 0 || strcmp(a, "--progress") == 0 || strcmp(a, "-F") == 0 || strcmp(a, "--from") == 0 ||
             strcmp(a, "-f") == 0 || strcmp(a, "--filter") == 0 || strcmp(a, "-C") == 0 || strcmp(a, "--filter-case") == 0 ||
             strcmp(a, "-l") == 0 || strcmp(a, "--layout") == 0 || strcmp(a, "-m") == 0 || strcmp(a, "--match") == 0)
         {
@@ -9835,6 +9824,11 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
             else if(strcmp(a, "-t") == 0 || strcmp(a, "--tools") == 0)
             {
                 cm_replace_string(&o->tools_raw, v);
+            }
+            else if(strcmp(a, "-p") == 0 || strcmp(a, "--progress") == 0)
+            {
+                cm_replace_string(&o->progress_mode, v);
+                o->progress_explicit = 1;
             }
             else if(strcmp(a, "-F") == 0 || strcmp(a, "--from") == 0)
             {
@@ -9888,6 +9882,12 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         else if((eq = cm_opt_value_eq(a, "--tools")) != NULL)
         {
             cm_replace_string(&o->tools_raw, eq);
+            free(eq);
+        }
+        else if((eq = cm_opt_value_eq(a, "--progress")) != NULL)
+        {
+            cm_replace_string(&o->progress_mode, eq);
+            o->progress_explicit = 1;
             free(eq);
         }
         else if((eq = cm_opt_value_eq(a, "--from")) != NULL)
@@ -10028,6 +10028,28 @@ static int cm_parse_args(int argc, char **argv, CmOptions *o, int *immediate)
         }
         cm_replace_string(&o->path_separator, s);
         free(s);
+    }
+
+    {
+        char *progress = cm_xstrdup(o->progress_mode);
+
+        cm_ascii_lower_inplace(progress);
+        if(strcmp(progress, "auto") && strcmp(progress, "off"))
+        {
+            char msg[512];
+
+            snprintf(msg, sizeof(msg), "invalid --progress mode: %s", progress);
+            free(progress);
+            *immediate = cm_usage_error(program, msg);
+            goto fail;
+        }
+        cm_replace_string(&o->progress_mode, progress);
+        free(progress);
+    }
+    if(strcmp(o->mode, "check") && strcmp(o->mode, "hash") && strcmp(o->mode, "generate") && strcmp(o->mode, "derive") && o->progress_explicit)
+    {
+        *immediate = cm_usage_error(program, "--progress is only valid with check/hash/generate/derive");
+        goto fail;
     }
 
     if(o->backup && strcmp(o->mode, "format") != 0)
